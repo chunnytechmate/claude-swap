@@ -92,13 +92,14 @@ writes a `claude-swap.cmd` shim so `claude-swap` just works in any new terminal.
 ## Using it
 
 The installer already created both profiles. Run `claude-swap` with **no
-arguments** to get an interactive picker — move with **↑/↓** (or `j`/`k`),
-**Enter** to switch, **q** to cancel:
+arguments** to get an interactive picker — type the number (or name) and press
+Enter (`q` cancels):
 
 ```text
-Select a profile  (↑/↓ to move, Enter to switch, q to cancel)
-  > claude  (active)
-    zai
+Select a profile:
+  1) claude  (active)
+  2) zai
+Enter number or name [claude] (q to cancel): 2
 ```
 
 Or name the profile directly:
@@ -132,7 +133,7 @@ never touched.
 
 | Command | What it does |
 | --- | --- |
-| `claude-swap` | interactive arrow-key picker (falls back to `status` when piped) |
+| `claude-swap` | interactive numbered picker (falls back to `status` when piped) |
 | `claude-swap <name>` | switch to `<name>` (e.g. `zai`, `claude`) |
 | `claude-swap list` | list profiles (`*` = active) |
 | `claude-swap status` | active profile + drift check |

@@ -4,7 +4,7 @@
   claude-swap - switch %USERPROFILE%\.claude\settings.json between named profiles.
 
 .EXAMPLE
-  claude-swap                 # interactive picker (arrow keys)
+  claude-swap                 # interactive picker (type a number)
   claude-swap zai             # switch to the "zai" profile
   claude-swap claude          # switch to the "claude" profile
   claude-swap list
@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.1.1'
+$Version = '1.2.0'
 $RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
@@ -154,55 +154,32 @@ function Cmd-Edit {
   if (-not (Test-Json $target)) { Write-Host "warning: '$n' is no longer valid JSON" -ForegroundColor Yellow }
 }
 
-# Interactive arrow-key picker. Returns the chosen profile name, or $null if cancelled.
+# Interactive numbered picker. Returns the chosen profile name, or $null if cancelled.
+# Uses a plain read prompt (no cursor/TUI tricks) so it works in every terminal.
 function Invoke-Pick {
   $opts = @(Get-Profiles)
   if ($opts.Count -eq 0) { Die "no profiles in $ProfilesDir" }
   $active = Get-Marker
-  $cur = [Array]::IndexOf($opts, $active); if ($cur -lt 0) { $cur = 0 }
+  $default = if ($active) { $active } else { $opts[0] }
 
-  # Redraw strategy: try to anchor the cursor and rewrite in place (clean).
-  # If the host/terminal (e.g. some ConPTY setups) rejects cursor moves, fall
-  # back to Clear-Host so the menu never stacks up.
-  $canPos = $false
-  $anchor = $null
-  try { $anchor = $Host.UI.RawUI.CursorPosition; $canPos = $true } catch { $canPos = $false }
+  Write-Host ''
+  Write-Host 'Select a profile:'
+  for ($i = 0; $i -lt $opts.Count; $i++) {
+    $tag = if ($opts[$i] -eq $active) { '  (active)' } else { '' }
+    Write-Host ("  {0}) {1}{2}" -f ($i + 1), $opts[$i], $tag)
+  }
 
-  $width = 46
-  try { $w = [Console]::WindowWidth - 1; if ($w -ge 20) { $width = $w } } catch { }
-
-  $first = $true
   while ($true) {
-    if (-not $first) {
-      if ($canPos) {
-        try {
-          $Host.UI.RawUI.CursorPosition = $anchor
-          # verify the move actually took effect (some hosts silently ignore it)
-          if ($Host.UI.RawUI.CursorPosition.Y -ne $anchor.Y) { $canPos = $false }
-        } catch { $canPos = $false }
-      }
-      if (-not $canPos) { Clear-Host }
+    $ans = (Read-Host "Enter number or name [$default] (q to cancel)").Trim()
+    if ($ans -eq '') { return $default }
+    if ($ans -eq 'q' -or $ans -eq 'Q') { return $null }
+    $num = 0
+    if ([int]::TryParse($ans, [ref]$num)) {
+      if ($num -ge 1 -and $num -le $opts.Count) { return $opts[$num - 1] }
+    } elseif ($opts -contains $ans) {
+      return $ans
     }
-    $first = $false
-
-    Write-Host ('Select a profile  (Up/Down to move, Enter to switch, Q to cancel)'.PadRight($width)) -ForegroundColor DarkGray
-    for ($i = 0; $i -lt $opts.Count; $i++) {
-      $tag  = if ($opts[$i] -eq $active) { '  (active)' } else { '' }
-      $line = if ($i -eq $cur) { "  > $($opts[$i])$tag" } else { "    $($opts[$i])$tag" }
-      $line = $line.PadRight($width)
-      if ($i -eq $cur) { Write-Host $line -ForegroundColor Cyan } else { Write-Host $line }
-    }
-
-    $k = [Console]::ReadKey($true)
-    switch ($k.Key) {
-      'UpArrow'   { $cur = ($cur - 1 + $opts.Count) % $opts.Count }
-      'DownArrow' { $cur = ($cur + 1) % $opts.Count }
-      'K'         { $cur = ($cur - 1 + $opts.Count) % $opts.Count }
-      'J'         { $cur = ($cur + 1) % $opts.Count }
-      'Enter'     { return $opts[$cur] }
-      'Q'         { return $null }
-      'Escape'    { return $null }
-    }
+    Write-Host "  invalid choice: $ans" -ForegroundColor Yellow
   }
 }
 
@@ -235,7 +212,7 @@ function Show-Usage {
 claude-swap $Version - switch %USERPROFILE%\.claude\settings.json between named profiles
 
 usage:
-  claude-swap                 interactive picker (arrow keys) - status if piped
+  claude-swap                 interactive picker (type a number) - status if piped
   claude-swap <name>          switch to a profile (e.g. zai, claude)
   claude-swap list            list profiles
   claude-swap status          show active profile + drift check
