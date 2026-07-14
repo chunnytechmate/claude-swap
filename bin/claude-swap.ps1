@@ -4,7 +4,7 @@
   claude-swap - switch %USERPROFILE%\.claude\settings.json between named profiles.
 
 .EXAMPLE
-  claude-swap                 # interactive picker (type a number)
+  claude-swap                 # interactive picker (arrow keys)
   claude-swap zai             # switch to the "zai" profile
   claude-swap claude          # switch to the "claude" profile
   claude-swap list
@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.2.0'
+$Version = '1.3.0'
 $RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
@@ -154,33 +154,64 @@ function Cmd-Edit {
   if (-not (Test-Json $target)) { Write-Host "warning: '$n' is no longer valid JSON" -ForegroundColor Yellow }
 }
 
-# Interactive numbered picker. Returns the chosen profile name, or $null if cancelled.
-# Uses a plain read prompt (no cursor/TUI tricks) so it works in every terminal.
+# Best-effort: enable ANSI/VT output for legacy conhost (Win10 < 1903).
+# ConPTY / Windows Terminal / VS Code already have VirtualTerminalLevel = 1.
+function Enable-Vt {
+  try {
+    if (-not ('ClaudeSwap.CsVt' -as [type])) {
+      Add-Type -Name CsVt -Namespace ClaudeSwap -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr GetStdHandle(int h);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@
+    }
+    $h = [ClaudeSwap.CsVt]::GetStdHandle(-11)
+    $m = [uint32]0
+    if ([ClaudeSwap.CsVt]::GetConsoleMode($h, [ref]$m)) {
+      [void][ClaudeSwap.CsVt]::SetConsoleMode($h, ($m -bor 0x4))
+    }
+  } catch { }
+}
+
+# Interactive arrow-key picker (ANSI redraw). Returns the chosen profile, or $null.
+# Redraws with VT escape sequences (which ConPTY interprets) instead of the
+# Win32 cursor API, and reads keys with [Console]::ReadKey.
 function Invoke-Pick {
   $opts = @(Get-Profiles)
   if ($opts.Count -eq 0) { Die "no profiles in $ProfilesDir" }
   $active = Get-Marker
-  $default = if ($active) { $active } else { $opts[0] }
+  $cur = [Array]::IndexOf($opts, $active); if ($cur -lt 0) { $cur = 0 }
 
-  Write-Host ''
-  Write-Host 'Select a profile:'
-  for ($i = 0; $i -lt $opts.Count; $i++) {
-    $tag = if ($opts[$i] -eq $active) { '  (active)' } else { '' }
-    Write-Host ("  {0}) {1}{2}" -f ($i + 1), $opts[$i], $tag)
-  }
+  Enable-Vt
+  $e = [char]27
 
-  while ($true) {
-    $ans = (Read-Host "Enter number or name [$default] (q to cancel)").Trim()
-    if ($ans -eq '') { return $default }
-    if ($ans -eq 'q' -or $ans -eq 'Q') { return $null }
-    $num = 0
-    if ([int]::TryParse($ans, [ref]$num)) {
-      if ($num -ge 1 -and $num -le $opts.Count) { return $opts[$num - 1] }
-    } elseif ($opts -contains $ans) {
-      return $ans
+  Write-Host 'Select a profile  ' -NoNewline
+  Write-Host '(Up/Down or j/k, Enter to switch, q to cancel)' -ForegroundColor DarkGray
+  [Console]::Out.Write("$e[?25l")   # hide cursor
+  try {
+    $first = $true
+    while ($true) {
+      if (-not $first) { [Console]::Out.Write("$e[$($opts.Count)A") }  # cursor up N lines
+      $first = $false
+      for ($i = 0; $i -lt $opts.Count; $i++) {
+        $tag  = if ($opts[$i] -eq $active) { '  (active)' } else { '' }
+        $mark = if ($i -eq $cur) { '> ' } else { '  ' }
+        [Console]::Out.Write("$e[2K`r")   # clear the whole line
+        if ($i -eq $cur) { Write-Host "  $mark$($opts[$i])$tag" -ForegroundColor Cyan }
+        else             { Write-Host "  $mark$($opts[$i])$tag" }
+      }
+      $k = [Console]::ReadKey($true)
+      switch ($k.Key) {
+        'UpArrow'   { $cur = ($cur - 1 + $opts.Count) % $opts.Count }
+        'DownArrow' { $cur = ($cur + 1) % $opts.Count }
+        'K'         { $cur = ($cur - 1 + $opts.Count) % $opts.Count }
+        'J'         { $cur = ($cur + 1) % $opts.Count }
+        'Enter'     { return $opts[$cur] }
+        'Q'         { return $null }
+        'Escape'    { return $null }
+      }
     }
-    Write-Host "  invalid choice: $ans" -ForegroundColor Yellow
-  }
+  } finally { [Console]::Out.Write("$e[?25h") }   # always restore cursor
 }
 
 function Cmd-Update {
@@ -212,7 +243,7 @@ function Show-Usage {
 claude-swap $Version - switch %USERPROFILE%\.claude\settings.json between named profiles
 
 usage:
-  claude-swap                 interactive picker (type a number) - status if piped
+  claude-swap                 interactive picker (arrow keys) - status if piped
   claude-swap <name>          switch to a profile (e.g. zai, claude)
   claude-swap list            list profiles
   claude-swap status          show active profile + drift check

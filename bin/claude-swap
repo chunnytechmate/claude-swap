@@ -2,7 +2,7 @@
 #
 # claude-swap — switch ~/.claude/settings.json between named profiles.
 #
-#   claude-swap              interactive picker (type a number) — status if piped
+#   claude-swap              interactive picker (arrow keys) — status if piped
 #   claude-swap <name>       switch to profile <name>   (e.g. zai, claude)
 #   claude-swap list         list available profiles
 #   claude-swap status       show active profile and drift check
@@ -16,7 +16,7 @@
 #
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 REPO_RAW="${CLAUDE_SWAP_REPO_RAW:-https://raw.githubusercontent.com/chunnytechmate/claude-swap/main}"
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) --------------
@@ -197,9 +197,8 @@ cmd_edit() {
   json_valid "$target" || err "warning: '$name' is no longer valid JSON"
 }
 
-# Interactive numbered picker. Prompts on stderr; sets REPLY_PROFILE.
-# Returns 1 if cancelled. Reads a line from the terminal (falls back to stdin).
-# Deliberately avoids cursor/TUI tricks so it works in every terminal.
+# Interactive arrow-key picker (ANSI redraw). Renders to stderr; sets REPLY_PROFILE.
+# Returns 1 if cancelled. Reads keys from the terminal (falls back to stdin).
 REPLY_PROFILE=""
 interactive_pick() {
   local -a opts=()
@@ -211,42 +210,50 @@ interactive_pick() {
   local in=0
   if { exec 3</dev/tty; } 2>/dev/null; then in=3; fi
 
-  local active default i n tag
+  local active cur=0 i
   active=$(marker_profile)
-  default="${active:-${opts[0]}}"
+  for i in "${!opts[@]}"; do [ "${opts[$i]}" = "$active" ] && cur=$i; done
 
-  printf '\n%sSelect a profile:%s\n' "$BOLD" "$RST" >&2
-  for i in "${!opts[@]}"; do
-    n=$((i + 1))
-    tag=""; [ "${opts[$i]}" = "$active" ] && tag="  ${DIM}(active)${RST}"
-    printf '  %s%d)%s %s%s\n' "$CYN" "$n" "$RST" "${opts[$i]}" "$tag" >&2
-  done
-
-  local ans
-  while true; do
-    printf '%sEnter number or name%s %s[%s]%s %s(q to cancel):%s ' \
-      "$BOLD" "$RST" "$DIM" "$default" "$RST" "$DIM" "$RST" >&2
-    if ! IFS= read -r -u "$in" ans; then ans=""; fi
-    # trim surrounding whitespace
-    ans="${ans#"${ans%%[![:space:]]*}"}"; ans="${ans%"${ans##*[![:space:]]}"}"
-
-    case "$ans" in
-      "")     REPLY_PROFILE="$default"; break ;;
-      q|Q)    [ "$in" = 3 ] && exec 3<&-; return 1 ;;
-    esac
-    if [[ "$ans" =~ ^[0-9]+$ ]]; then
-      if [ "$ans" -ge 1 ] && [ "$ans" -le "${#opts[@]}" ]; then
-        REPLY_PROFILE="${opts[$((ans - 1))]}"; break
+  local anim=false; [ -t 2 ] && anim=true
+  _render() {
+    for i in "${!opts[@]}"; do
+      printf '\033[2K\r' >&2   # clear line
+      if [ "$i" -eq "$cur" ]; then
+        printf '  %s>%s %s%s%s' "$CYN" "$RST" "$BOLD" "${opts[$i]}" "$RST" >&2
+      else
+        printf '    %s' "${opts[$i]}" >&2
       fi
-    else
-      for p in "${opts[@]}"; do
-        [ "$p" = "$ans" ] && { REPLY_PROFILE="$p"; break; }
-      done
-      [ "$REPLY_PROFILE" = "$ans" ] && break
-    fi
-    printf '  %sinvalid choice: %s%s\n' "$YLW" "$ans" "$RST" >&2
+      [ "${opts[$i]}" = "$active" ] && printf '  %s(active)%s' "$DIM" "$RST" >&2
+      printf '\n' >&2
+    done
+  }
+
+  printf '%sSelect a profile%s  %s(Up/Down or j/k, Enter to switch, q to cancel)%s\n' \
+    "$BOLD" "$RST" "$DIM" "$RST" >&2
+  $anim && printf '\033[?25l' >&2   # hide cursor
+  _render
+
+  local key k2
+  while IFS= read -rsn1 -u "$in" key 2>/dev/null; do
+    case "$key" in
+      $'\x1b')
+        read -rsn2 -u "$in" k2 2>/dev/null || k2=""
+        case "$k2" in
+          '[A'|'OA') cur=$(( (cur - 1 + ${#opts[@]}) % ${#opts[@]} )) ;;
+          '[B'|'OB') cur=$(( (cur + 1) % ${#opts[@]} )) ;;
+          '') $anim && printf '\033[?25h' >&2; [ "$in" = 3 ] && exec 3<&-; return 1 ;;  # lone Esc
+        esac ;;
+      q|Q) $anim && printf '\033[?25h' >&2; [ "$in" = 3 ] && exec 3<&-; return 1 ;;
+      k)   cur=$(( (cur - 1 + ${#opts[@]}) % ${#opts[@]} )) ;;
+      j)   cur=$(( (cur + 1) % ${#opts[@]} )) ;;
+      '')  break ;;  # Enter
+    esac
+    $anim && printf '\033[%dA' "${#opts[@]}" >&2   # move cursor back up to redraw
+    _render
   done
+  $anim && printf '\033[?25h' >&2
   [ "$in" = 3 ] && exec 3<&-
+  REPLY_PROFILE="${opts[$cur]}"
   return 0
 }
 
@@ -283,7 +290,7 @@ usage() {
 ${BOLD}claude-swap${RST} $VERSION — switch ~/.claude/settings.json between named profiles
 
 ${BOLD}usage:${RST}
-  claude-swap                 interactive picker (type a number) — status if piped
+  claude-swap                 interactive picker (arrow keys) — status if piped
   claude-swap ${CYN}<name>${RST}          switch to a profile (e.g. ${CYN}zai${RST}, ${CYN}claude${RST})
   claude-swap list            list profiles
   claude-swap status          show active profile + drift check
