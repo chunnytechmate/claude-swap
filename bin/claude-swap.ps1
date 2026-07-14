@@ -23,8 +23,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.6.0'
+$Version = '1.6.1'
 $RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
+# minisign public key for verified self-updates. Empty = not yet activated.
+# To activate: see SIGNING.md - generate a keypair, paste the `ed25519:...`
+# public key here (and in claude-swap), then sign each release.
+$MinisignPub = ''
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
 $ClaudeDir   = if ($env:CLAUDE_SWAP_HOME) { $env:CLAUDE_SWAP_HOME } else { Join-Path $HOME '.claude' }
@@ -346,6 +350,27 @@ function Cmd-Update {
         Die "update source redirected to a non-https URL: $final"
       }
     } catch { }
+  }
+
+  # signature verification (only active once $MinisignPub is set; see SIGNING.md)
+  if ($MinisignPub) {
+    if (-not (Get-Command minisign -ErrorAction SilentlyContinue)) {
+      Write-Host "!   signed updates configured but 'minisign' is not installed - cannot verify" -ForegroundColor Yellow
+    } else {
+      $sig = "$tmp.minisig"
+      try {
+        Invoke-WebRequest -Uri "$url.minisig" -OutFile $sig -UseBasicParsing
+        & minisign -Vm "$tmp" -x $sig -P "$MinisignPub" 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "OK  release signature verified" -ForegroundColor Green
+        } else {
+          Remove-Item -Force $tmp, $sig -ErrorAction SilentlyContinue
+          Die 'SIGNATURE VERIFICATION FAILED - refusing to install (possible tampering)'
+        }
+      } catch {
+        Write-Host "!   no signature found at $url.minisig - cannot verify (proceeding unsigned)" -ForegroundColor Yellow
+      }
+    }
   }
 
   # integrity gate: everything must pass before we touch the installed file

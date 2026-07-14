@@ -17,8 +17,12 @@
 #
 set -euo pipefail
 
-VERSION="1.6.0"
+VERSION="1.6.1"
 REPO_RAW="${CLAUDE_SWAP_REPO_RAW:-https://raw.githubusercontent.com/chunnytechmate/claude-swap/main}"
+# minisign public key for verified self-updates. Empty = not yet activated.
+# To activate: see SIGNING.md — generate a keypair, paste the `ed25519:...`
+# public key here (and in claude-swap.ps1), then sign each release.
+MINISIGN_PUB=""
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) --------------
 CLAUDE_DIR="${CLAUDE_SWAP_HOME:-$HOME/.claude}"
@@ -386,6 +390,24 @@ cmd_update() {
     wget -qO "$tmp" "$url" || { rm -f "$tmp"; die "download failed (wget)"; }
   else
     rm -f "$tmp"; die "need curl or wget to update"
+  fi
+
+  # signature verification (only active once MINISIGN_PUB is set; see SIGNING.md)
+  if [ -n "${MINISIGN_PUB:-}" ]; then
+    if ! command -v minisign >/dev/null 2>&1; then
+      info "${YLW}!${RST} signed updates are configured but 'minisign' is not installed — cannot verify"
+    else
+      if curl -fsSL "$url.minisig" -o "$tmp.minisig" 2>/dev/null \
+         || wget -qO "$tmp.minisig" "$url.minisig" 2>/dev/null; then
+        if minisign -Vm "$tmp" -x "$tmp.minisig" -P "$MINISIGN_PUB" >/dev/null 2>&1; then
+          info "${GRN}✓${RST} release signature verified"
+        else
+          rm -f "$tmp" "$tmp.minisig"; die "SIGNATURE VERIFICATION FAILED — refusing to install (possible tampering)"
+        fi
+      else
+        info "${YLW}!${RST} no signature found at $url.minisig — cannot verify (proceeding unsigned)"
+      fi
+    fi
   fi
 
   # integrity gate: everything must pass before we touch the installed file

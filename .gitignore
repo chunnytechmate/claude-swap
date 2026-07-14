@@ -11,3 +11,9 @@ profiles/.backups/
 # editor / OS cruft
 *.swp
 .DS_Store
+
+# minisign private keys — NEVER commit these (signing secrets).
+# The *.minisig signature files, by contrast, ARE meant to be committed.
+minisign.key
+*.minisign.key
+*.key
