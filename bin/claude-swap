@@ -17,7 +17,7 @@
 #
 set -euo pipefail
 
-VERSION="1.5.2"
+VERSION="1.6.0"
 REPO_RAW="${CLAUDE_SWAP_REPO_RAW:-https://raw.githubusercontent.com/chunnytechmate/claude-swap/main}"
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) --------------
@@ -42,13 +42,15 @@ die()  { err "$*"; exit 1; }
 
 # --- helpers -------------------------------------------------------------
 json_valid() {
-  # 0 if $1 is valid JSON (or if no validator is available)
+  # 0 if $1 is valid JSON. Fails SAFE when no validator is available — we refuse
+  # to install rather than silently assume validity (install python3 or jq).
   if command -v python3 >/dev/null 2>&1; then
     python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null
   elif command -v jq >/dev/null 2>&1; then
     jq -e . "$1" >/dev/null 2>&1
   else
-    return 0
+    err "no JSON validator found (install python3 or jq) — refusing to install unvalidated"
+    return 1
   fi
 }
 
@@ -212,29 +214,31 @@ cmd_edit() {
 # The key is never passed via argv (env var for python3; a temp file for jq).
 # Returns 0 on success, nonzero otherwise.
 update_token() {  # dest key field
-  local dest="$1" key="$2" field="$3" kf
+  local dest="$1" key="$2" field="$3" kf out
+  # stage to a randomly-named temp in the SAME dir (unpredictable name defeats a
+  # pre-planted symlink at a fixed "<name>.json.tmp" that cp/open would follow)
+  out=$(mktemp "${dest}.XXXXXX") || return 1
   if command -v python3 >/dev/null 2>&1; then
-    KEY="$key" DEST="$dest" FIELD="$field" python3 - <<'PY' || { rm -f "$dest.tmp"; return 1; }
+    KEY="$key" DEST="$dest" OUT="$out" FIELD="$field" python3 - <<'PY' || { rm -f "$out"; return 1; }
 import json, os
-p = os.environ['DEST']
-d = json.load(open(p))
+d = json.load(open(os.environ['DEST']))
 d.setdefault('env', {})[os.environ['FIELD']] = os.environ['KEY']
-with open(p + '.tmp', 'w') as f:
+with open(os.environ['OUT'], 'w') as f:
     json.dump(d, f, indent=2); f.write('\n')
 PY
-    mv -f "$dest.tmp" "$dest" || return 1
+    mv -f "$out" "$dest" || { rm -f "$out"; return 1; }
     return 0
   fi
   if command -v jq >/dev/null 2>&1; then
-    kf=$(mktemp) || return 1
+    kf=$(mktemp) || { rm -f "$out"; return 1; }
     printf '%s' "$key" > "$kf"; chmod 600 "$kf"
-    jq --rawfile k "$kf" --arg f "$field" '.env[$f] = ($k|rtrimstr("\n"))' "$dest" > "$dest.tmp" \
-      || { rm -f "$kf" "$dest.tmp"; return 1; }
+    jq --rawfile k "$kf" --arg f "$field" '.env[$f] = ($k|rtrimstr("\n"))' "$dest" > "$out" \
+      || { rm -f "$kf" "$out"; return 1; }
     rm -f "$kf"
-    mv -f "$dest.tmp" "$dest" || return 1
+    mv -f "$out" "$dest" || { rm -f "$out"; return 1; }
     return 0
   fi
-  return 2  # no JSON tooling available
+  rm -f "$out"; return 2  # no JSON tooling available
 }
 
 cmd_changekey() {
@@ -401,8 +405,10 @@ cmd_update() {
     return
   fi
 
-  # atomic replace: stage next to the target, then mv (new inode — safe while running)
-  local staged="$self.new.$$"
+  # atomic replace: stage next to the target with a RANDOM name (unpredictable
+  # name defeats a pre-planted symlink at a fixed "self.new" that cp follows),
+  # then rename over it (new inode — safe while running)
+  local staged; staged=$(mktemp "${self}.XXXXXX") || { rm -f "$tmp"; die "failed to stage update"; }
   cp "$tmp" "$staged" && chmod 0755 "$staged" && mv -f "$staged" "$self" \
     || { rm -f "$tmp" "$staged"; die "failed to install update — original left untouched"; }
   rm -f "$tmp"

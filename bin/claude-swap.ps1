@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.5.2'
+$Version = '1.6.0'
 $RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
@@ -35,6 +35,24 @@ $ActiveMark  = Join-Path $ProfilesDir '.active'
 $MaxBackups  = 10
 
 function Die { param($m) Write-Host "error: $m" -ForegroundColor Red; exit 1 }
+
+# Defense-in-depth: force an owner-only ACL on a token-bearing path so it is
+# not readable by other local users regardless of inherited permissions.
+# Mirrors the bash side's chmod 700/600. Best-effort; never throws.
+function Lock-Path {
+  param([string]$Path)
+  if (-not $Path) { return }
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  try {
+    $u = $env:USERNAME
+    $isDir = (Get-Item -LiteralPath $Path -Force).PSIsContainer
+    if ($isDir) {
+      & icacls "$Path" /inheritance:r /grant:r "$u:(OI)(CI)F" 2>$null | Out-Null
+    } else {
+      & icacls "$Path" /inheritance:r /grant:r "$u:F" 2>$null | Out-Null
+    }
+  } catch { }
+}
 
 function Test-Json {
   param([string]$Path)
@@ -116,6 +134,7 @@ function Cmd-Switch {
   if (-not (Test-Json $target)) { Die "profile '$n' is not valid JSON: $target" }
 
   New-Item -ItemType Directory -Force -Path $ProfilesDir, $BackupDir | Out-Null
+  Lock-Path $ProfilesDir; Lock-Path $BackupDir
 
   if (Test-Path $Settings) {
     if ((Get-Hash $Settings) -eq (Get-Hash $target)) {
@@ -124,7 +143,9 @@ function Cmd-Switch {
       return
     }
     $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
-    Copy-Item -LiteralPath $Settings -Destination (Join-Path $BackupDir "settings.$ts.json") -Force
+    $bk = Join-Path $BackupDir "settings.$ts.json"
+    Copy-Item -LiteralPath $Settings -Destination $bk -Force
+    Lock-Path $bk
     Invoke-Prune
   }
 
@@ -133,6 +154,7 @@ function Cmd-Switch {
   Copy-Item -LiteralPath $target -Destination $tmp -Force
   if (-not (Test-Json $tmp)) { Remove-Item -Force $tmp; Die "staged settings invalid - aborted" }
   Move-Item -LiteralPath $tmp -Destination $Settings -Force
+  Lock-Path $Settings
   Set-Content -LiteralPath $ActiveMark -Value $n -NoNewline
   Write-Host "switched to $n" -ForegroundColor Green -NoNewline; Write-Host "  -> $Settings" -ForegroundColor DarkGray
   Write-Host "  restart Claude Code / reload the window for env changes to take effect." -ForegroundColor DarkGray
@@ -145,7 +167,10 @@ function Cmd-Save {
   if (-not (Test-Path $Settings)) { Die 'no settings.json to save' }
   if (-not (Test-Json $Settings)) { Die 'current settings.json is not valid JSON' }
   New-Item -ItemType Directory -Force -Path $ProfilesDir | Out-Null
-  Copy-Item -LiteralPath $Settings -Destination (ProfilePath $n) -Force
+  Lock-Path $ProfilesDir
+  $pp = ProfilePath $n
+  Copy-Item -LiteralPath $Settings -Destination $pp -Force
+  Lock-Path $pp
   Set-Content -LiteralPath $ActiveMark -Value $n -NoNewline
   Write-Host "saved current settings.json to profile $n" -ForegroundColor Green
 }
@@ -185,12 +210,17 @@ function Cmd-ChangeKey {
   $ans = Read-Host -Prompt "Save key $masked to $n? [y/N]"
   if ($ans -notmatch '^(y|yes)$') { Write-Host 'cancelled - no changes' -ForegroundColor DarkGray; return }
 
-  # replace only env.<field>, preserving everything else
+  # replace only env.<field>, preserving everything else (write to a random
+  # temp, then atomically rename - unpredictable name defeats a pre-planted symlink)
   try {
     $prof = Get-Content -Raw -LiteralPath $target | ConvertFrom-Json
     if (-not $prof.env) { Die "profile '$n' has no env block - try: claude-swap edit $n" }
     $prof.env.$field = $key
-    ($prof | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $target -Encoding UTF8
+    $tmp = Join-Path $ProfilesDir ("." + $n + "." + [guid]::NewGuid().ToString('N') + '.json')
+    ($prof | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $tmp -Encoding UTF8
+    if (-not (Test-Json $tmp)) { Remove-Item -Force $tmp; Die "staged profile invalid - aborted" }
+    Move-Item -LiteralPath $tmp -Destination $target -Force
+    Lock-Path $target
   } catch { Die "failed to update '$n': $($_.Exception.Message)" }
 
   Write-Host "updated $field in profile $n" -ForegroundColor Green -NoNewline
@@ -199,15 +229,19 @@ function Cmd-ChangeKey {
   # if this is the active profile, re-deploy so the new key takes effect now
   if ((Get-Marker) -eq $n) {
     New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+    Lock-Path $BackupDir
     if (Test-Path $Settings) {
       $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
-      Copy-Item -LiteralPath $Settings -Destination (Join-Path $BackupDir "settings.$ts.json") -Force
+      $bk = Join-Path $BackupDir "settings.$ts.json"
+      Copy-Item -LiteralPath $Settings -Destination $bk -Force
+      Lock-Path $bk
       Invoke-Prune
     }
     $tmp = Join-Path $ClaudeDir (".settings." + [guid]::NewGuid().ToString('N'))
     Copy-Item -LiteralPath $target -Destination $tmp -Force
     if (Test-Json $tmp) {
       Move-Item -LiteralPath $tmp -Destination $Settings -Force
+      Lock-Path $Settings
       Write-Host "  also applied to live settings.json ($n is active)" -ForegroundColor DarkGray
     } else {
       Remove-Item -Force $tmp
@@ -298,10 +332,20 @@ function Cmd-Update {
   Write-Host "fetching latest from $url" -ForegroundColor DarkGray
   $tmp = [IO.Path]::GetTempFileName()
   try {
-    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+    $resp = Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
   } catch {
     Remove-Item -Force $tmp -ErrorAction SilentlyContinue
     Die "download failed: $($_.Exception.Message)"
+  }
+  # security: reject a redirect downgrade to plain http (default source only)
+  if (-not $env:CLAUDE_SWAP_REPO_RAW) {
+    try {
+      $final = $resp.BaseResponse.ResponseUri.AbsoluteUri
+      if ($final -and ($final -notlike 'https://*')) {
+        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+        Die "update source redirected to a non-https URL: $final"
+      }
+    } catch { }
   }
 
   # integrity gate: everything must pass before we touch the installed file
@@ -324,8 +368,9 @@ function Cmd-Update {
     return
   }
 
-  # atomic-ish replace: stage next to the target, then move over it
-  $staged = "$self.new"
+  # atomic-ish replace: stage next to the target with a RANDOM name (unpredictable
+  # name defeats a pre-planted symlink at a fixed "self.new"), then move over it
+  $staged = "$self.$([guid]::NewGuid().ToString('N')).new"
   Copy-Item -LiteralPath $tmp -Destination $staged -Force
   Move-Item -LiteralPath $staged -Destination $self -Force
   Remove-Item -Force $tmp -ErrorAction SilentlyContinue

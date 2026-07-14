@@ -68,6 +68,14 @@ pick_bindir() {
   printf '%s' "$HOME/.local/bin"
 }
 BIN_DIR="${CLAUDE_SWAP_BIN:-$(pick_bindir)}"
+# security: if BIN_DIR came from CLAUDE_SWAP_BIN, it is written verbatim into a
+# shell rc line — reject anything that isn't a plain path (no shell metachars).
+if [ -n "${CLAUDE_SWAP_BIN:-}" ]; then
+  case "$BIN_DIR" in
+    *[!A-Za-z0-9/._~:-]*)
+      fail "CLAUDE_SWAP_BIN has characters unsafe for a shell rc (use a plain path): $BIN_DIR" ;;
+  esac
+fi
 mkdir -p "$BIN_DIR"
 
 # --- 2. install the binary -----------------------------------------------

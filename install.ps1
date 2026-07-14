@@ -32,6 +32,22 @@ function Ok   { param($m) Write-Host "OK  $m" -ForegroundColor Green }
 function Warn { param($m) Write-Host "!   $m" -ForegroundColor Yellow }
 function Fail { param($m) Write-Host "X   $m" -ForegroundColor Red; exit 1 }
 
+# Defense-in-depth: owner-only ACL on token-bearing paths (mirrors bash chmod 700/600)
+function Lock-Path {
+  param([string]$Path)
+  if (-not $Path) { return }
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  try {
+    $u = $env:USERNAME
+    $isDir = (Get-Item -LiteralPath $Path -Force).PSIsContainer
+    if ($isDir) {
+      & icacls "$Path" /inheritance:r /grant:r "$u:(OI)(CI)F" 2>$null | Out-Null
+    } else {
+      & icacls "$Path" /inheritance:r /grant:r "$u:F" 2>$null | Out-Null
+    }
+  } catch { }
+}
+
 # --- 0. bootstrap: support `irm ... | iex` (no local checkout) -------------
 # floor TLS at 1.2 for all downloads in this session
 try {
@@ -46,10 +62,17 @@ if (-not (Test-Path (Join-Path $RepoDir 'bin\claude-swap.ps1'))) {
   $tmpRepo = Join-Path ([IO.Path]::GetTempPath()) ("claude-swap-" + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Force -Path "$tmpRepo\bin", "$tmpRepo\profiles" | Out-Null
   try {
-    Invoke-WebRequest -Uri "$raw/bin/claude-swap.ps1" -OutFile "$tmpRepo\bin\claude-swap.ps1" -UseBasicParsing
+    $resp = Invoke-WebRequest -Uri "$raw/bin/claude-swap.ps1" -OutFile "$tmpRepo\bin\claude-swap.ps1" -UseBasicParsing
     Invoke-WebRequest -Uri "$raw/profiles/zai.json.example" -OutFile "$tmpRepo\profiles\zai.json.example" -UseBasicParsing
     Invoke-WebRequest -Uri "$raw/profiles/claude.json.example" -OutFile "$tmpRepo\profiles\claude.json.example" -UseBasicParsing
   } catch { Fail "download failed: $($_.Exception.Message)" }
+  # security: reject a redirect downgrade to plain http (default source only)
+  if (-not $env:CLAUDE_SWAP_REPO_RAW) {
+    try {
+      $final = $resp.BaseResponse.ResponseUri.AbsoluteUri
+      if ($final -and ($final -notlike 'https://*')) { Fail "download source redirected to non-https: $final" }
+    } catch { }
+  }
   # validate the downloaded CLI parses before installing it
   $dl = Get-Content -Raw -LiteralPath "$tmpRepo\bin\claude-swap.ps1"
   $parseErrors = $null
@@ -78,10 +101,12 @@ if ($userPath -notlike "*$BinDir*") {
 
 # --- 3. profiles dir + import current settings as `claude` ---------------
 New-Item -ItemType Directory -Force -Path $ProfilesDir | Out-Null
+Lock-Path $ProfilesDir
 $claudeProfile = Join-Path $ProfilesDir 'claude.json'
 $settings = Join-Path $ClaudeDir 'settings.json'
 if (-not (Test-Path $claudeProfile) -and (Test-Path $settings)) {
   Copy-Item -LiteralPath $settings -Destination $claudeProfile -Force
+  Lock-Path $claudeProfile
   Set-Content -LiteralPath (Join-Path $ProfilesDir '.active') -Value 'claude' -NoNewline
   Ok "imported current settings.json as the 'claude' profile"
 }
@@ -101,6 +126,7 @@ function Build-ZaiJson {
     } catch { }
   }
   ($prof | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $Dest -Encoding UTF8
+  Lock-Path $Dest
 }
 
 $zaiDest = Join-Path $ProfilesDir 'zai.json'
