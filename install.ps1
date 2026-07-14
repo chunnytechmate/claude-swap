@@ -20,7 +20,8 @@
 param()
 $ErrorActionPreference = 'Stop'
 
-$RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoDir = $null
+try { $RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Path } catch { }
 if (-not $RepoDir) { $RepoDir = (Get-Location).Path }
 
 $ClaudeDir   = if ($env:CLAUDE_SWAP_HOME) { $env:CLAUDE_SWAP_HOME } else { Join-Path $HOME '.claude' }
@@ -29,6 +30,33 @@ $BinDir      = Join-Path $env:LOCALAPPDATA 'claude-swap\bin'
 
 function Ok   { param($m) Write-Host "OK  $m" -ForegroundColor Green }
 function Warn { param($m) Write-Host "!   $m" -ForegroundColor Yellow }
+function Fail { param($m) Write-Host "X   $m" -ForegroundColor Red; exit 1 }
+
+# --- 0. bootstrap: support `irm ... | iex` (no local checkout) -------------
+# floor TLS at 1.2 for all downloads in this session
+try {
+  [Net.ServicePointManager]::SecurityProtocol =
+    [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch { }
+
+if (-not (Test-Path (Join-Path $RepoDir 'bin\claude-swap.ps1'))) {
+  $raw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
+  if (($raw -notlike 'https://*') -and (-not $env:CLAUDE_SWAP_REPO_RAW)) { Fail "refusing non-https source: $raw" }
+  Write-Host "no local checkout found - downloading from $raw" -ForegroundColor DarkGray
+  $tmpRepo = Join-Path ([IO.Path]::GetTempPath()) ("claude-swap-" + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Force -Path "$tmpRepo\bin", "$tmpRepo\profiles" | Out-Null
+  try {
+    Invoke-WebRequest -Uri "$raw/bin/claude-swap.ps1" -OutFile "$tmpRepo\bin\claude-swap.ps1" -UseBasicParsing
+    Invoke-WebRequest -Uri "$raw/profiles/zai.json.example" -OutFile "$tmpRepo\profiles\zai.json.example" -UseBasicParsing
+    Invoke-WebRequest -Uri "$raw/profiles/claude.json.example" -OutFile "$tmpRepo\profiles\claude.json.example" -UseBasicParsing
+  } catch { Fail "download failed: $($_.Exception.Message)" }
+  # validate the downloaded CLI parses before installing it
+  $dl = Get-Content -Raw -LiteralPath "$tmpRepo\bin\claude-swap.ps1"
+  $parseErrors = $null
+  [void][System.Management.Automation.Language.Parser]::ParseInput($dl, [ref]$null, [ref]$parseErrors)
+  if ($parseErrors -and $parseErrors.Count -gt 0) { Fail 'downloaded claude-swap.ps1 has syntax errors - aborted' }
+  $RepoDir = $tmpRepo
+}
 
 # --- 1. install script + cmd shim ----------------------------------------
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null

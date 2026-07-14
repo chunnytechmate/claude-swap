@@ -92,17 +92,18 @@ writes a `claude-swap.cmd` shim so `claude-swap` just works in any new terminal.
 ## Using it
 
 The installer already created both profiles. Run `claude-swap` with **no
-arguments** to get an interactive picker — type the number (or name) and press
-Enter (`q` cancels):
+arguments** to get an interactive picker — move with **↑/↓** (or `j`/`k`),
+**Enter** to switch, **q** to cancel:
 
 ```text
-Select a profile:
-  1) claude  (active)
-  2) zai
-Enter number or name [claude] (q to cancel): 2
+Select a profile  (Up/Down or j/k, Enter to switch, q to cancel)
+  > claude  (active)
+    zai
 ```
 
-Or name the profile directly:
+The picker redraws with ANSI/VT escape sequences, which every modern terminal
+(Windows Terminal, VS Code, ConPTY, all Linux/macOS terminals) interprets
+natively. Or name the profile directly:
 
 ```bash
 claude-swap zai       # use Z.AI / GLM
@@ -133,7 +134,7 @@ never touched.
 
 | Command | What it does |
 | --- | --- |
-| `claude-swap` | interactive numbered picker (falls back to `status` when piped) |
+| `claude-swap` | interactive arrow-key picker (falls back to `status` when piped) |
 | `claude-swap <name>` | switch to `<name>` (e.g. `zai`, `claude`) |
 | `claude-swap list` | list profiles (`*` = active) |
 | `claude-swap status` | active profile + drift check |
@@ -173,6 +174,37 @@ function cs { claude-swap status }
     ├── .active                   # name of the current profile
     └── .backups/                 # timestamped copies of previous settings.json
 ```
+
+## Security
+
+`claude-swap` is designed to be a minimal, auditable attack surface:
+
+- **Zero dependencies** — one bash script / one PowerShell script. No npm, no
+  pip, nothing to supply-chain.
+- **Secrets never leave your machine.** API tokens live in
+  `~/.claude/profiles/*.json` with `600` permissions (dir `700`); the repo
+  ships only sanitized `*.json.example` templates and gitignores the rest.
+  The installer reads your key without echoing it and never passes it through
+  process arguments (where other local processes could briefly see it).
+- **Hardened self-update.** `claude-swap update` fetches over **HTTPS only**
+  with **TLS ≥ 1.2** enforced (redirects included), then must pass an
+  integrity gate before anything is replaced: shebang/marker check, minimum
+  size (anti-truncation), version marker, and a full **syntax parse**
+  (`bash -n` / PowerShell `Parser`). The replacement itself is **atomic**
+  (staged next to the target, then renamed) — a failed update can never brick
+  the installed tool, and your profiles are never touched.
+- **Path-traversal guard.** Profile names are validated
+  (`[A-Za-z0-9][A-Za-z0-9._-]*`), so a name like `../../evil` can't read or
+  write outside the profiles directory.
+- **Safe switching.** Every switch validates JSON, backs up the previous
+  `settings.json` (mode `600` — backups can contain tokens), and installs the
+  new file atomically. A corrupt profile aborts with the live config untouched.
+- `CLAUDE_SWAP_REPO_RAW` can point `update` at a fork/branch; non-HTTPS
+  sources are refused unless this override is explicitly set, and a warning is
+  printed when it is.
+
+Found a vulnerability? Please open a GitHub issue (or contact the author
+privately for anything sensitive).
 
 ## Notes
 

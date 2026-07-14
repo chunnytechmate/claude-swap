@@ -28,6 +28,36 @@ if [ -t 1 ]; then B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; C=$'\033[36m'; D=$
 say()  { printf '%s\n' "$*"; }
 ok()   { printf '%s✓%s %s\n' "$G" "$R" "$*"; }
 warn() { printf '%s!%s %s\n' "$Y" "$R" "$*"; }
+fail() { printf '%s✗%s %s\n' "$Y" "$R" "$*" >&2; exit 1; }
+
+# --- 0. bootstrap: support `curl ... | bash` (no local checkout) ----------
+# When piped, there is no repo next to us; fetch the needed files over
+# enforced-https into a temp dir and install from there.
+fetch() { # url dest
+  if command -v curl >/dev/null 2>&1; then
+    # default source: enforce https + TLS >= 1.2; explicit override may relax
+    local -a f=(-fsSL --proto '=https' --tlsv1.2)
+    [ -n "${CLAUDE_SWAP_REPO_RAW:-}" ] && f=(-fsSL)
+    curl "${f[@]}" "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1"
+  else
+    fail "need curl or wget"
+  fi
+}
+if [ ! -f "$REPO_DIR/bin/claude-swap" ]; then
+  RAW="${CLAUDE_SWAP_REPO_RAW:-https://raw.githubusercontent.com/chunnytechmate/claude-swap/main}"
+  case "$RAW" in https://*) ;; *) [ -n "${CLAUDE_SWAP_REPO_RAW:-}" ] || fail "refusing non-https source: $RAW";; esac
+  say "${D}no local checkout found — downloading from $RAW${R}"
+  TMP_REPO=$(mktemp -d)
+  trap 'rm -rf "$TMP_REPO"' EXIT
+  mkdir -p "$TMP_REPO/bin" "$TMP_REPO/profiles"
+  fetch "$RAW/bin/claude-swap"                "$TMP_REPO/bin/claude-swap"           || fail "download failed: bin/claude-swap"
+  fetch "$RAW/profiles/zai.json.example"      "$TMP_REPO/profiles/zai.json.example" || fail "download failed: zai.json.example"
+  fetch "$RAW/profiles/claude.json.example"   "$TMP_REPO/profiles/claude.json.example" || fail "download failed: claude.json.example"
+  bash -n "$TMP_REPO/bin/claude-swap" || fail "downloaded claude-swap failed the syntax check — aborted"
+  REPO_DIR="$TMP_REPO"
+fi
 
 # --- 1. pick a bin dir on PATH -------------------------------------------
 pick_bindir() {
@@ -63,8 +93,10 @@ fi
 
 # --- 4. profiles dir + import current settings as `claude` ---------------
 mkdir -p "$PROFILES_DIR"
+chmod 700 "$PROFILES_DIR" 2>/dev/null || true
 if [ ! -e "$PROFILES_DIR/claude.json" ] && [ -f "$CLAUDE_DIR/settings.json" ]; then
   cp -p "$CLAUDE_DIR/settings.json" "$PROFILES_DIR/claude.json"
+  chmod 600 "$PROFILES_DIR/claude.json" 2>/dev/null || true
   printf 'claude' > "$PROFILES_DIR/.active"
   ok "imported current settings.json as the ${B}claude${R} profile"
 fi
@@ -96,8 +128,11 @@ with open(dest, 'w') as f:
     f.write('\n')
 PY
   else
-    # no python3: just substitute the key (template already sets bypassPermissions)
-    sed "s|PUT-YOUR-Z.AI-API-KEY-HERE|$key|" "$tpl" > "$dest"
+    # no python3: substitute in pure bash — never pass the key via argv,
+    # where it would be briefly visible to other processes in `ps`
+    local tpl_content
+    tpl_content=$(cat "$tpl")
+    printf '%s\n' "${tpl_content/PUT-YOUR-Z.AI-API-KEY-HERE/$key}" > "$dest"
   fi
 }
 

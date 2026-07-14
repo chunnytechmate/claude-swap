@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.3.0'
+$Version = '1.4.0'
 $RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
@@ -49,6 +49,9 @@ function Get-Hash {
 }
 
 function ProfilePath { param($n) Join-Path $ProfilesDir "$n.json" }
+
+# security: profile names may not traverse paths or start with a dot
+function Test-Name { param($n) return ($n -match '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') }
 
 function Get-Profiles {
   if (-not (Test-Path $ProfilesDir)) { return @() }
@@ -106,6 +109,7 @@ function Cmd-Status {
 
 function Cmd-Switch {
   param([string]$n)
+  if (-not (Test-Name $n)) { Die "invalid profile name: '$n' (letters, digits, . _ - only)" }
   $target = ProfilePath $n
   if (-not (Test-Path $target)) { Die "profile '$n' not found - run: claude-swap list" }
   if (-not (Test-Json $target)) { Die "profile '$n' is not valid JSON: $target" }
@@ -136,6 +140,7 @@ function Cmd-Switch {
 function Cmd-Save {
   param([string]$n)
   if (-not $n) { Die 'usage: claude-swap save <name>' }
+  if (-not (Test-Name $n)) { Die "invalid profile name: '$n' (letters, digits, . _ - only)" }
   if (-not (Test-Path $Settings)) { Die 'no settings.json to save' }
   if (-not (Test-Json $Settings)) { Die 'current settings.json is not valid JSON' }
   New-Item -ItemType Directory -Force -Path $ProfilesDir | Out-Null
@@ -147,6 +152,7 @@ function Cmd-Save {
 function Cmd-Edit {
   param([string]$n)
   if (-not $n) { Die 'usage: claude-swap edit <name>' }
+  if (-not (Test-Name $n)) { Die "invalid profile name: '$n' (letters, digits, . _ - only)" }
   $target = ProfilePath $n
   if (-not (Test-Path $target)) { Die "profile '$n' not found" }
   $ed = if ($env:EDITOR) { $env:EDITOR } else { 'notepad' }
@@ -218,6 +224,18 @@ function Cmd-Update {
   $url  = "$RepoRaw/bin/claude-swap.ps1"
   $self = $PSCommandPath
   if (-not $self) { $self = $MyInvocation.MyCommand.Path }
+
+  # security: https only, unless the source was explicitly overridden (testing/forks)
+  if ($url -notlike 'https://*') {
+    if (-not $env:CLAUDE_SWAP_REPO_RAW) { Die "refusing non-https update source: $url" }
+    Write-Host "!   using overridden update source: $url" -ForegroundColor Yellow
+  }
+  # floor TLS at 1.2 (Windows PowerShell 5.1 may otherwise negotiate older TLS)
+  try {
+    [Net.ServicePointManager]::SecurityProtocol =
+      [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  } catch { }
+
   Write-Host "fetching latest from $url" -ForegroundColor DarkGray
   $tmp = [IO.Path]::GetTempFileName()
   try {
@@ -226,13 +244,31 @@ function Cmd-Update {
     Remove-Item -Force $tmp -ErrorAction SilentlyContinue
     Die "download failed: $($_.Exception.Message)"
   }
+
+  # integrity gate: everything must pass before we touch the installed file
   $content = Get-Content -Raw -LiteralPath $tmp
-  if (($content -notmatch 'claude-swap') -or ($content -notmatch 'Requires -Version')) {
+  if (($content.Length -lt 4096) -or ($content -notmatch 'claude-swap') -or ($content -notmatch 'Requires -Version')) {
     Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-    Die 'downloaded file does not look like claude-swap - aborted'
+    Die 'downloaded file failed validation (wrong content or truncated) - aborted'
   }
+  $parseErrors = $null
+  [void][System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$null, [ref]$parseErrors)
+  if ($parseErrors -and $parseErrors.Count -gt 0) {
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    Die 'downloaded file has PowerShell syntax errors - aborted'
+  }
+
   $newver = if ($content -match "Version\s*=\s*'([\d.]+)'") { $Matches[1] } else { '?' }
-  Copy-Item -LiteralPath $tmp -Destination $self -Force
+  if ($newver -eq $Version) {
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    Write-Host "already up to date ($Version)" -ForegroundColor Green
+    return
+  }
+
+  # atomic-ish replace: stage next to the target, then move over it
+  $staged = "$self.new"
+  Copy-Item -LiteralPath $tmp -Destination $staged -Force
+  Move-Item -LiteralPath $staged -Destination $self -Force
   Remove-Item -Force $tmp -ErrorAction SilentlyContinue
   Write-Host "updated claude-swap $Version -> $newver" -ForegroundColor Green -NoNewline
   Write-Host "  ($self)" -ForegroundColor DarkGray
