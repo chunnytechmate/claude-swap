@@ -271,7 +271,7 @@ Remove-Item "$env:USERPROFILE\.claude\profiles" -Recurse -Force
 The live `~/.claude/settings.json` (or `%USERPROFILE%\.claude\settings.json`)
 is left in place, so Claude Code keeps working with whatever profile is active.
 
-Current version: **1.5.0**.
+Current version: **1.5.2**.
 
 ## License
 
