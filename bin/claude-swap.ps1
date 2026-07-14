@@ -4,7 +4,7 @@
   claude-swap - switch %USERPROFILE%\.claude\settings.json between named profiles.
 
 .EXAMPLE
-  claude-swap                 # show status
+  claude-swap                 # interactive picker (arrow keys)
   claude-swap zai             # switch to the "zai" profile
   claude-swap claude          # switch to the "claude" profile
   claude-swap list
@@ -12,16 +12,18 @@
   claude-swap which
   claude-swap save <name>
   claude-swap edit <name>
+  claude-swap update          # update claude-swap itself from GitHub
   claude-swap help
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Position = 0)][string]$Command = 'status',
+  [Parameter(Position = 0)][string]$Command = '',
   [Parameter(Position = 1)][string]$Name
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.0.0'
+$Version = '1.1.0'
+$RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
 $ClaudeDir   = if ($env:CLAUDE_SWAP_HOME) { $env:CLAUDE_SWAP_HOME } else { Join-Path $HOME '.claude' }
@@ -31,7 +33,6 @@ $BackupDir   = Join-Path $ProfilesDir '.backups'
 $ActiveMark  = Join-Path $ProfilesDir '.active'
 $MaxBackups  = 10
 
-function Write-Info { param($m) Write-Host $m }
 function Die { param($m) Write-Host "error: $m" -ForegroundColor Red; exit 1 }
 
 function Test-Json {
@@ -51,8 +52,7 @@ function ProfilePath { param($n) Join-Path $ProfilesDir "$n.json" }
 
 function Get-Profiles {
   if (-not (Test-Path $ProfilesDir)) { return @() }
-  Get-ChildItem -LiteralPath $ProfilesDir -Filter '*.json' -File |
-    ForEach-Object { $_.BaseName }
+  Get-ChildItem -LiteralPath $ProfilesDir -Filter '*.json' -File | ForEach-Object { $_.BaseName }
 }
 
 function Get-Marker {
@@ -78,7 +78,7 @@ function Invoke-Prune {
 
 function Cmd-List {
   $marker = Get-Marker
-  $profiles = Get-Profiles
+  $profiles = @(Get-Profiles)
   if (-not $profiles) { Write-Host "no profiles in $ProfilesDir" -ForegroundColor DarkGray; return }
   foreach ($p in $profiles) {
     if ($p -eq $marker) { Write-Host "  * $p" -ForegroundColor Green }
@@ -154,22 +154,89 @@ function Cmd-Edit {
   if (-not (Test-Json $target)) { Write-Host "warning: '$n' is no longer valid JSON" -ForegroundColor Yellow }
 }
 
+# Interactive arrow-key picker. Returns the chosen profile name, or $null if cancelled.
+function Invoke-Pick {
+  $opts = @(Get-Profiles)
+  if ($opts.Count -eq 0) { Die "no profiles in $ProfilesDir" }
+  $active = Get-Marker
+  $cur = [Array]::IndexOf($opts, $active); if ($cur -lt 0) { $cur = 0 }
+
+  Write-Host 'Select a profile  ' -NoNewline
+  Write-Host '(Up/Down to move, Enter to switch, Q to cancel)' -ForegroundColor DarkGray
+  $top = [Console]::CursorTop
+  while ($true) {
+    for ($i = 0; $i -lt $opts.Count; $i++) {
+      $tag = if ($opts[$i] -eq $active) { '  (active)' } else { '' }
+      $line = if ($i -eq $cur) { "  > $($opts[$i])$tag" } else { "    $($opts[$i])$tag" }
+      $line = $line.PadRight([Math]::Max(1, [Console]::WindowWidth - 1))
+      if ($i -eq $cur) { Write-Host $line -ForegroundColor Cyan } else { Write-Host $line }
+    }
+    $k = [Console]::ReadKey($true)
+    switch ($k.Key) {
+      'UpArrow'   { $cur = ($cur - 1 + $opts.Count) % $opts.Count }
+      'DownArrow' { $cur = ($cur + 1) % $opts.Count }
+      'K'         { $cur = ($cur - 1 + $opts.Count) % $opts.Count }
+      'J'         { $cur = ($cur + 1) % $opts.Count }
+      'Enter'     { return $opts[$cur] }
+      'Q'         { return $null }
+      'Escape'    { return $null }
+    }
+    try { [Console]::SetCursorPosition(0, $top) } catch { }
+  }
+}
+
+function Cmd-Update {
+  $url  = "$RepoRaw/bin/claude-swap.ps1"
+  $self = $PSCommandPath
+  if (-not $self) { $self = $MyInvocation.MyCommand.Path }
+  Write-Host "fetching latest from $url" -ForegroundColor DarkGray
+  $tmp = [IO.Path]::GetTempFileName()
+  try {
+    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+  } catch {
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    Die "download failed: $($_.Exception.Message)"
+  }
+  $content = Get-Content -Raw -LiteralPath $tmp
+  if (($content -notmatch 'claude-swap') -or ($content -notmatch 'Requires -Version')) {
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    Die 'downloaded file does not look like claude-swap - aborted'
+  }
+  $newver = if ($content -match "Version\s*=\s*'([\d.]+)'") { $Matches[1] } else { '?' }
+  Copy-Item -LiteralPath $tmp -Destination $self -Force
+  Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+  Write-Host "updated claude-swap $Version -> $newver" -ForegroundColor Green -NoNewline
+  Write-Host "  ($self)" -ForegroundColor DarkGray
+}
+
 function Show-Usage {
   @"
 claude-swap $Version - switch %USERPROFILE%\.claude\settings.json between named profiles
 
 usage:
-  claude-swap                 show status
+  claude-swap                 interactive picker (arrow keys) - status if piped
   claude-swap <name>          switch to a profile (e.g. zai, claude)
   claude-swap list            list profiles
   claude-swap status          show active profile + drift check
   claude-swap which           print active profile name only
   claude-swap save <name>     save current settings.json into a profile
   claude-swap edit <name>     open a profile in `$EDITOR
+  claude-swap update          update claude-swap itself from GitHub
   claude-swap help
 
 profiles dir: $ProfilesDir
 "@ | Write-Host
+}
+
+function Invoke-PickAndSwitch {
+  $sel = Invoke-Pick
+  if ($sel) { Cmd-Switch $sel } else { Write-Host 'cancelled' -ForegroundColor DarkGray }
+}
+
+# --- dispatch ------------------------------------------------------------
+if ([string]::IsNullOrEmpty($Command)) {
+  if (-not [Console]::IsInputRedirected) { Invoke-PickAndSwitch } else { Cmd-Status }
+  return
 }
 
 switch ($Command.ToLower()) {
@@ -179,6 +246,10 @@ switch ($Command.ToLower()) {
   'which'   { Get-Marker }
   'save'    { Cmd-Save $Name }
   'edit'    { Cmd-Edit $Name }
+  'pick'    { Invoke-PickAndSwitch }
+  'menu'    { Invoke-PickAndSwitch }
+  'update'  { Cmd-Update }
+  'upgrade' { Cmd-Update }
   'help'    { Show-Usage }
   '-h'      { Show-Usage }
   '--help'  { Show-Usage }

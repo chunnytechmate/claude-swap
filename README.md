@@ -91,7 +91,17 @@ writes a `claude-swap.cmd` shim so `claude-swap` just works in any new terminal.
 
 ## Using it
 
-The installer already created both profiles, so just switch:
+The installer already created both profiles. Run `claude-swap` with **no
+arguments** to get an interactive picker — move with **↑/↓** (or `j`/`k`),
+**Enter** to switch, **q** to cancel:
+
+```text
+Select a profile  (↑/↓ to move, Enter to switch, q to cancel)
+  > claude  (active)
+    zai
+```
+
+Or name the profile directly:
 
 ```bash
 claude-swap zai       # use Z.AI / GLM
@@ -104,6 +114,17 @@ Skipped the key at install time (or want to change it later)?
 claude-swap edit zai  # opens ~/.claude/profiles/zai.json in $EDITOR
 ```
 
+## Updating
+
+Update the tool in place from GitHub (works on Linux, macOS, and Windows):
+
+```bash
+claude-swap update
+```
+
+It replaces only the `claude-swap` program — your profiles and API keys are
+never touched.
+
 > After switching, **restart Claude Code** (or reload the IDE window) so the new
 > `env` / model settings are picked up.
 
@@ -111,13 +132,14 @@ claude-swap edit zai  # opens ~/.claude/profiles/zai.json in $EDITOR
 
 | Command | What it does |
 | --- | --- |
-| `claude-swap` | show active profile + list |
+| `claude-swap` | interactive arrow-key picker (falls back to `status` when piped) |
 | `claude-swap <name>` | switch to `<name>` (e.g. `zai`, `claude`) |
 | `claude-swap list` | list profiles (`*` = active) |
 | `claude-swap status` | active profile + drift check |
 | `claude-swap which` | print active profile name only (scriptable) |
 | `claude-swap save <name>` | save current `settings.json` into a profile |
 | `claude-swap edit <name>` | open a profile in `$EDITOR` |
+| `claude-swap update` | update claude-swap itself from GitHub |
 | `claude-swap help` | usage |
 
 ## Shortcuts

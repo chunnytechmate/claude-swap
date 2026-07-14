@@ -2,12 +2,13 @@
 #
 # claude-swap — switch ~/.claude/settings.json between named profiles.
 #
-#   claude-swap              show status (active profile + list)
+#   claude-swap              interactive picker (arrow keys) — or status if piped
 #   claude-swap <name>       switch to profile <name>   (e.g. zai, claude)
 #   claude-swap list         list available profiles
 #   claude-swap status       show active profile and drift check
 #   claude-swap which        print the active profile name only (scriptable)
 #   claude-swap edit <name>  open a profile in $EDITOR
+#   claude-swap update       update claude-swap itself from GitHub
 #   claude-swap help
 #
 # Profiles live in ~/.claude/profiles/<name>.json — each is a COMPLETE
@@ -15,7 +16,8 @@
 #
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
+REPO_RAW="${CLAUDE_SWAP_REPO_RAW:-https://raw.githubusercontent.com/chunnytechmate/claude-swap/main}"
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) --------------
 CLAUDE_DIR="${CLAUDE_SWAP_HOME:-$HOME/.claude}"
@@ -195,18 +197,104 @@ cmd_edit() {
   json_valid "$target" || err "warning: '$name' is no longer valid JSON"
 }
 
+# Interactive arrow-key picker. Renders to stderr; sets REPLY_PROFILE.
+# Returns 1 if cancelled. Reads keys from the terminal (falls back to stdin).
+REPLY_PROFILE=""
+interactive_pick() {
+  local -a opts=()
+  local p
+  while IFS= read -r p; do [ -n "$p" ] && opts+=("$p"); done < <(list_profiles)
+  [ "${#opts[@]}" -gt 0 ] || die "no profiles in $PROFILES_DIR — run: claude-swap help"
+
+  # input source: prefer the controlling terminal, else stdin (for pipes/tests)
+  local in=0
+  if { exec 3</dev/tty; } 2>/dev/null; then in=3; fi
+
+  local active cur=0 i
+  active=$(marker_profile)
+  for i in "${!opts[@]}"; do [ "${opts[$i]}" = "$active" ] && cur=$i; done
+
+  local anim=false; [ -t 2 ] && anim=true
+  _render() {
+    for i in "${!opts[@]}"; do
+      if [ "$i" -eq "$cur" ]; then
+        printf '  %s>%s %s%s%s' "$CYN" "$RST" "$BOLD" "${opts[$i]}" "$RST" >&2
+      else
+        printf '    %s' "${opts[$i]}" >&2
+      fi
+      [ "${opts[$i]}" = "$active" ] && printf '  %s(active)%s' "$DIM" "$RST" >&2
+      printf '\n' >&2
+    done
+  }
+
+  printf '%sSelect a profile%s  %s(↑/↓ to move, Enter to switch, q to cancel)%s\n' \
+    "$BOLD" "$RST" "$DIM" "$RST" >&2
+  _render
+
+  local key k2
+  while IFS= read -rsn1 -u "$in" key 2>/dev/null; do
+    case "$key" in
+      $'\x1b')
+        read -rsn2 -u "$in" k2 2>/dev/null || k2=""
+        case "$k2" in
+          '[A'|'OA') cur=$(( (cur - 1 + ${#opts[@]}) % ${#opts[@]} )) ;;
+          '[B'|'OB') cur=$(( (cur + 1) % ${#opts[@]} )) ;;
+          '') $anim && printf '\033[?25h' >&2; [ "$in" = 3 ] && exec 3<&-; return 1 ;;  # lone Esc
+        esac ;;
+      q|Q) [ "$in" = 3 ] && exec 3<&-; return 1 ;;
+      k)   cur=$(( (cur - 1 + ${#opts[@]}) % ${#opts[@]} )) ;;   # vim keys too
+      j)   cur=$(( (cur + 1) % ${#opts[@]} )) ;;
+      '')  break ;;  # Enter
+    esac
+    $anim && printf '\033[%dA' "${#opts[@]}" >&2   # move cursor back up to redraw
+    _render
+  done
+  [ "$in" = 3 ] && exec 3<&-
+  REPLY_PROFILE="${opts[$cur]}"
+  return 0
+}
+
+cmd_update() {
+  local self tmp url="$REPO_RAW/bin/claude-swap"
+  # update the actual running script (resolve symlinks), not whatever is first on PATH
+  self="${BASH_SOURCE[0]}"
+  command -v readlink >/dev/null 2>&1 && self=$(readlink -f "$self" 2>/dev/null || printf '%s' "$self")
+  [ -w "$self" ] || die "cannot write to $self (check permissions; try: sudo)"
+
+  info "${DIM}fetching latest from $url${RST}"
+  tmp=$(mktemp)
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; die "download failed (curl)"; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$tmp" "$url" || { rm -f "$tmp"; die "download failed (wget)"; }
+  else
+    rm -f "$tmp"; die "need curl or wget to update"
+  fi
+
+  # sanity: must look like our script
+  head -1 "$tmp" | grep -q '^#!/usr/bin/env bash' || { rm -f "$tmp"; die "downloaded file doesn't look like claude-swap — aborted"; }
+  grep -q 'claude-swap' "$tmp" || { rm -f "$tmp"; die "downloaded file failed validation — aborted"; }
+
+  local newver; newver=$(grep -m1 '^VERSION=' "$tmp" | cut -d'"' -f2)
+  chmod +x "$tmp"
+  cat "$tmp" > "$self"   # preserve inode/permissions of the installed file
+  rm -f "$tmp"
+  info "${GRN}✓${RST} updated claude-swap ${DIM}$VERSION${RST} → ${BOLD}${newver:-?}${RST}  ${DIM}($self)${RST}"
+}
+
 usage() {
   cat <<EOF
 ${BOLD}claude-swap${RST} $VERSION — switch ~/.claude/settings.json between named profiles
 
 ${BOLD}usage:${RST}
-  claude-swap                 show status
+  claude-swap                 interactive picker (↑/↓, Enter) — status if piped
   claude-swap ${CYN}<name>${RST}          switch to a profile (e.g. ${CYN}zai${RST}, ${CYN}claude${RST})
   claude-swap list            list profiles
   claude-swap status          show active profile + drift check
   claude-swap which           print active profile name only
   claude-swap save ${CYN}<name>${RST}     save current settings.json into a profile
   claude-swap edit ${CYN}<name>${RST}     open a profile in \$EDITOR
+  claude-swap update          update claude-swap itself from GitHub
   claude-swap help
 
 profiles dir: $PROFILES_DIR
@@ -214,13 +302,26 @@ EOF
 }
 
 # --- dispatch ------------------------------------------------------------
-cmd="${1:-status}"
+if [ $# -eq 0 ]; then
+  # no arguments: interactive picker on a terminal, plain status otherwise
+  if { exec 3</dev/tty; } 2>/dev/null; then
+    exec 3<&-
+    if interactive_pick; then cmd_switch "$REPLY_PROFILE"; else info "${DIM}cancelled${RST}"; fi
+  else
+    cmd_status
+  fi
+  exit 0
+fi
+
+cmd="$1"
 case "$cmd" in
   status|--status)   cmd_status ;;
   list|ls|--list)    cmd_list ;;
   which)             marker_profile; echo ;;
   save)              cmd_save "${2:-}" ;;
   edit)              cmd_edit "${2:-}" ;;
+  pick|menu)         if interactive_pick; then cmd_switch "$REPLY_PROFILE"; else info "${DIM}cancelled${RST}"; fi ;;
+  update|upgrade)    cmd_update ;;
   help|-h|--help)    usage ;;
   version|-v|--version) echo "claude-swap $VERSION" ;;
   -*)                die "unknown option: $cmd (try: claude-swap help)" ;;
