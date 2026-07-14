@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.5.0'
+$Version = '1.5.1'
 $RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
@@ -335,21 +335,46 @@ function Cmd-Update {
 
 function Show-Usage {
   @"
-claude-swap $Version - switch %USERPROFILE%\.claude\settings.json between named profiles
+claude-swap $Version
+Switch Claude Code's settings.json between named profiles (e.g. native
+'claude' and a provider like 'zai' / Z.AI-GLM).
 
-usage:
-  claude-swap                 interactive picker (arrow keys) - status if piped
-  claude-swap <name>          switch to a profile (e.g. zai, claude)
-  claude-swap list            list profiles
-  claude-swap status          show active profile + drift check
-  claude-swap which           print active profile name only
-  claude-swap save <name>     save current settings.json into a profile
-  claude-swap edit <name>     open a profile in `$EDITOR
-  claude-swap changekey [name]   replace the API key in a profile (default zai)
-  claude-swap update          update claude-swap itself from GitHub
-  claude-swap help
+USAGE
+  claude-swap [command] [args]
 
-profiles dir: $ProfilesDir
+COMMANDS
+  (no args)        interactive arrow-key picker (status if piped)
+  <name>           switch to profile <name>   (e.g. zai, claude)
+  list             list profiles (* marks the active one)
+  status           show active profile + drift check
+  which            print the active profile name only (scriptable)
+  save <name>      copy current settings.json into a profile
+  edit <name>      open a profile in `$EDITOR
+  changekey [name] replace the API key in a profile (default: zai)
+  update           update claude-swap itself from GitHub
+  version          print the version
+  help             show this help
+
+EXAMPLES
+  claude-swap             pick a profile with the arrow keys
+  claude-swap zai         switch to Z.AI / GLM
+  claude-swap claude      switch back to native Claude
+  claude-swap changekey   rotate the API key (re-applies if active)
+  claude-swap save work   snapshot current settings.json as 'work'
+
+PROFILES
+  Each profile is a complete settings.json, stored in:
+    $ProfilesDir
+  The active profile is copied to:
+    $Settings
+  After switching, restart Claude Code (or reload the IDE window) so the
+  new env / model settings take effect.
+
+ENVIRONMENT
+  CLAUDE_SWAP_HOME        config root (default: ~/.claude)
+  CLAUDE_SWAP_REPO_RAW    source for 'update' / install (default: main branch)
+
+Docs:  https://github.com/chunnytechmate/claude-swap
 "@ | Write-Host
 }
 
