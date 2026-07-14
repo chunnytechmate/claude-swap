@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.5.1'
+$Version = '1.5.2'
 $RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
@@ -333,7 +333,29 @@ function Cmd-Update {
   Write-Host "  ($self)" -ForegroundColor DarkGray
 }
 
-function Show-Usage {
+function Show-Usage-Short {
+  @"
+claude-swap $Version
+Switch Claude Code's settings.json between named profiles.
+
+COMMANDS (claude-swap <command>):
+  (no args)        interactive arrow-key picker (status if piped)
+  <name>           switch to a profile (e.g. zai, claude)
+  list             list profiles (* = active)
+  status           show active profile + drift check
+  which            print the active profile name (scriptable)
+  save <name>      copy settings.json into a profile
+  edit <name>      open a profile in `$EDITOR
+  changekey [name] replace the API key (default: zai)
+  update           update claude-swap from GitHub
+  version          print the version
+  help [all]       show this help, or full details
+
+run 'claude-swap help all' for examples, file locations, and env vars
+"@ | Write-Host
+}
+
+function Show-Usage-Full {
   @"
 claude-swap $Version
 Switch Claude Code's settings.json between named profiles (e.g. native
@@ -353,7 +375,7 @@ COMMANDS
   changekey [name] replace the API key in a profile (default: zai)
   update           update claude-swap itself from GitHub
   version          print the version
-  help             show this help
+  help [all]       show short help, or full details with 'all' / '-a'
 
 EXAMPLES
   claude-swap             pick a profile with the arrow keys
@@ -403,9 +425,9 @@ switch ($Command.ToLower()) {
   'menu'    { Invoke-PickAndSwitch }
   'update'  { Cmd-Update }
   'upgrade' { Cmd-Update }
-  'help'    { Show-Usage }
-  '-h'      { Show-Usage }
-  '--help'  { Show-Usage }
+  'help'    { if ($Name -in @('all','-a','--all')) { Show-Usage-Full } else { Show-Usage-Short } }
+  '-h'      { Show-Usage-Short }
+  '--help'  { Show-Usage-Short }
   'version' { Write-Host "claude-swap $Version" }
   default   { Cmd-Switch $Command }
 }

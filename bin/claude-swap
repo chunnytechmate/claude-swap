@@ -17,7 +17,7 @@
 #
 set -euo pipefail
 
-VERSION="1.5.1"
+VERSION="1.5.2"
 REPO_RAW="${CLAUDE_SWAP_REPO_RAW:-https://raw.githubusercontent.com/chunnytechmate/claude-swap/main}"
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) --------------
@@ -409,7 +409,29 @@ cmd_update() {
   info "${GRN}✓${RST} updated claude-swap ${DIM}$VERSION${RST} → ${BOLD}${newver:-?}${RST}  ${DIM}($self)${RST}"
 }
 
-usage() {
+usage_short() {
+  cat <<EOF
+${BOLD}claude-swap${RST} $VERSION
+Switch Claude Code's settings.json between named profiles.
+
+${BOLD}commands${RST} (claude-swap ${CYN}<command>${RST}):
+  (no args)        interactive arrow-key picker (status if piped)
+  <name>           switch to a profile (e.g. zai, claude)
+  list             list profiles (* = active)
+  status           show active profile + drift check
+  which            print the active profile name (scriptable)
+  save <name>      copy settings.json into a profile
+  edit <name>      open a profile in \$EDITOR
+  changekey [name] replace the API key (default: zai)
+  update           update claude-swap from GitHub
+  version          print the version
+  help [all]       show this help, or full details
+
+${DIM}run 'claude-swap help all' for examples, file locations, and env vars${RST}
+EOF
+}
+
+usage_full() {
   cat <<EOF
 ${BOLD}claude-swap${RST} $VERSION
 Switch Claude Code's settings.json between named profiles (e.g. native
@@ -429,7 +451,7 @@ ${BOLD}COMMANDS${RST}
   changekey [name] replace the API key in a profile (default: zai)
   update           update claude-swap itself from GitHub
   version          print the version
-  help             show this help
+  help [all]       show short help, or full details with 'all' / '-a'
 
 ${BOLD}EXAMPLES${RST}
   claude-swap             pick a profile with the arrow keys
@@ -476,7 +498,11 @@ case "$cmd" in
   changekey|change-key|key)  cmd_changekey "${2:-}" ;;
   pick|menu)         if interactive_pick; then cmd_switch "$REPLY_PROFILE"; else info "${DIM}cancelled${RST}"; fi ;;
   update|upgrade)    cmd_update ;;
-  help|-h|--help)    usage ;;
+  help|-h|--help)
+    case "${2:-}" in
+      all|-a|--all) usage_full ;;
+      *) usage_short ;;
+    esac ;;
   version|-v|--version) echo "claude-swap $VERSION" ;;
   -*)                die "unknown option: $cmd (try: claude-swap help)" ;;
   *)                 cmd_switch "$cmd" ;;
