@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+#
+# claude-swap — switch ~/.claude/settings.json between named profiles.
+#
+#   claude-swap              show status (active profile + list)
+#   claude-swap <name>       switch to profile <name>   (e.g. zai, claude)
+#   claude-swap list         list available profiles
+#   claude-swap status       show active profile and drift check
+#   claude-swap which        print the active profile name only (scriptable)
+#   claude-swap edit <name>  open a profile in $EDITOR
+#   claude-swap help
+#
+# Profiles live in ~/.claude/profiles/<name>.json — each is a COMPLETE
+# settings.json. The active one is copied to ~/.claude/settings.json.
+#
+set -euo pipefail
+
+VERSION="1.0.0"
+
+# --- paths (override root with CLAUDE_SWAP_HOME for testing) --------------
+CLAUDE_DIR="${CLAUDE_SWAP_HOME:-$HOME/.claude}"
+SETTINGS="$CLAUDE_DIR/settings.json"
+PROFILES_DIR="$CLAUDE_DIR/profiles"
+BACKUP_DIR="$PROFILES_DIR/.backups"
+ACTIVE_MARKER="$PROFILES_DIR/.active"
+MAX_BACKUPS=10
+
+# --- colors (only when writing to a terminal) ----------------------------
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'
+  YLW=$'\033[33m'; CYN=$'\033[36m'; RST=$'\033[0m'
+else
+  BOLD=""; DIM=""; RED=""; GRN=""; YLW=""; CYN=""; RST=""
+fi
+
+info() { printf '%s\n' "$*"; }
+err()  { printf '%serror:%s %s\n' "$RED" "$RST" "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+# --- helpers -------------------------------------------------------------
+json_valid() {
+  # 0 if $1 is valid JSON (or if no validator is available)
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null
+  elif command -v jq >/dev/null 2>&1; then
+    jq -e . "$1" >/dev/null 2>&1
+  else
+    return 0
+  fi
+}
+
+hash_file() {
+  [ -f "$1" ] || { printf 'MISSING'; return; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    wc -c < "$1" | tr -d ' '
+  fi
+}
+
+profile_path() { printf '%s/%s.json' "$PROFILES_DIR" "$1"; }
+
+list_profiles() {
+  [ -d "$PROFILES_DIR" ] || return 0
+  local f b
+  for f in "$PROFILES_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    b=$(basename "$f")
+    printf '%s\n' "${b%.json}"
+  done
+}
+
+marker_profile() {
+  [ -f "$ACTIVE_MARKER" ] && tr -d '[:space:]' < "$ACTIVE_MARKER" || printf ''
+}
+
+# Best-effort detection of which profile settings.json currently matches.
+matched_profile() {
+  [ -f "$SETTINGS" ] || { printf ''; return; }
+  local want p
+  want=$(hash_file "$SETTINGS")
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ "$(hash_file "$(profile_path "$p")")" = "$want" ]; then
+      printf '%s\n' "$p"; return
+    fi
+  done < <(list_profiles)
+  printf ''
+}
+
+prune_backups() {
+  [ -d "$BACKUP_DIR" ] || return 0
+  local files
+  # newest first; delete everything past MAX_BACKUPS
+  files=$(ls -1t "$BACKUP_DIR"/settings.*.json 2>/dev/null || true)
+  [ -n "$files" ] || return 0
+  printf '%s\n' "$files" | tail -n +$((MAX_BACKUPS + 1)) | while IFS= read -r f; do
+    [ -n "$f" ] && rm -f "$f"
+  done
+}
+
+# --- commands ------------------------------------------------------------
+cmd_list() {
+  local profiles marker
+  profiles=$(list_profiles)
+  marker=$(marker_profile)
+  [ -n "$profiles" ] || { info "${DIM}no profiles in $PROFILES_DIR${RST}"; return; }
+  local p
+  while IFS= read -r p; do
+    if [ "$p" = "$marker" ]; then
+      printf '  %s* %s%s\n' "$GRN" "$p" "$RST"
+    else
+      printf '    %s\n' "$p"
+    fi
+  done <<< "$profiles"
+}
+
+cmd_status() {
+  local marker matched
+  marker=$(marker_profile)
+  matched=$(matched_profile)
+
+  if [ -n "$marker" ]; then
+    printf '%sactive:%s %s%s%s\n' "$BOLD" "$RST" "$CYN" "$marker" "$RST"
+  elif [ -n "$matched" ]; then
+    printf '%sactive:%s %s%s%s %s(detected)%s\n' "$BOLD" "$RST" "$CYN" "$matched" "$RST" "$DIM" "$RST"
+  else
+    printf '%sactive:%s %s(unknown — settings.json matches no profile)%s\n' "$BOLD" "$RST" "$YLW" "$RST"
+  fi
+
+  # drift: marker says X but settings.json no longer matches X
+  if [ -n "$marker" ] && [ -f "$(profile_path "$marker")" ]; then
+    if [ "$(hash_file "$SETTINGS")" != "$(hash_file "$(profile_path "$marker")")" ]; then
+      printf '%s⚠ settings.json has been edited since the last swap (drift from profile %s).%s\n' \
+        "$YLW" "$marker" "$RST"
+      printf '  %sRun `claude-swap %s` to reset, or `claude-swap save %s` to capture edits.%s\n' \
+        "$DIM" "$marker" "$marker" "$RST"
+    fi
+  fi
+
+  printf '\n%sprofiles:%s\n' "$BOLD" "$RST"
+  cmd_list
+}
+
+cmd_switch() {
+  local name="$1" target ts tmp
+  target=$(profile_path "$name")
+  [ -f "$target" ] || die "profile '$name' not found — run: claude-swap list"
+  json_valid "$target" || die "profile '$name' is not valid JSON: $target"
+
+  mkdir -p "$PROFILES_DIR" "$BACKUP_DIR"
+
+  # back up whatever is live now
+  if [ -f "$SETTINGS" ]; then
+    if [ "$(hash_file "$SETTINGS")" = "$(hash_file "$target")" ]; then
+      info "${GRN}✓${RST} already on ${BOLD}$name${RST}"
+      printf '%s' "$name" > "$ACTIVE_MARKER"
+      return
+    fi
+    ts=$(date +%Y%m%d-%H%M%S)
+    cp -p "$SETTINGS" "$BACKUP_DIR/settings.$ts.json"
+    prune_backups
+  fi
+
+  # atomic install: stage in same dir, validate, then move into place
+  tmp=$(mktemp "$CLAUDE_DIR/.settings.XXXXXX")
+  cat "$target" > "$tmp"
+  if ! json_valid "$tmp"; then rm -f "$tmp"; die "staged settings invalid — aborted, settings.json untouched"; fi
+  mv -f "$tmp" "$SETTINGS"
+  printf '%s' "$name" > "$ACTIVE_MARKER"
+  info "${GRN}✓${RST} switched to ${BOLD}$name${RST}  ${DIM}→ $SETTINGS${RST}"
+  info "${DIM}  restart Claude Code / reload the window for env changes to take effect.${RST}"
+}
+
+cmd_save() {
+  # capture the current live settings.json back into a profile
+  local name="$1"
+  [ -n "$name" ] || die "usage: claude-swap save <name>"
+  [ -f "$SETTINGS" ] || die "no settings.json to save"
+  json_valid "$SETTINGS" || die "current settings.json is not valid JSON"
+  mkdir -p "$PROFILES_DIR"
+  cp -p "$SETTINGS" "$(profile_path "$name")"
+  printf '%s' "$name" > "$ACTIVE_MARKER"
+  info "${GRN}✓${RST} saved current settings.json to profile ${BOLD}$name${RST}"
+}
+
+cmd_edit() {
+  local name="$1" target
+  [ -n "$name" ] || die "usage: claude-swap edit <name>"
+  target=$(profile_path "$name")
+  [ -f "$target" ] || die "profile '$name' not found"
+  "${EDITOR:-vi}" "$target"
+  json_valid "$target" || err "warning: '$name' is no longer valid JSON"
+}
+
+usage() {
+  cat <<EOF
+${BOLD}claude-swap${RST} $VERSION — switch ~/.claude/settings.json between named profiles
+
+${BOLD}usage:${RST}
+  claude-swap                 show status
+  claude-swap ${CYN}<name>${RST}          switch to a profile (e.g. ${CYN}zai${RST}, ${CYN}claude${RST})
+  claude-swap list            list profiles
+  claude-swap status          show active profile + drift check
+  claude-swap which           print active profile name only
+  claude-swap save ${CYN}<name>${RST}     save current settings.json into a profile
+  claude-swap edit ${CYN}<name>${RST}     open a profile in \$EDITOR
+  claude-swap help
+
+profiles dir: $PROFILES_DIR
+EOF
+}
+
+# --- dispatch ------------------------------------------------------------
+cmd="${1:-status}"
+case "$cmd" in
+  status|--status)   cmd_status ;;
+  list|ls|--list)    cmd_list ;;
+  which)             marker_profile; echo ;;
+  save)              cmd_save "${2:-}" ;;
+  edit)              cmd_edit "${2:-}" ;;
+  help|-h|--help)    usage ;;
+  version|-v|--version) echo "claude-swap $VERSION" ;;
+  -*)                die "unknown option: $cmd (try: claude-swap help)" ;;
+  *)                 cmd_switch "$cmd" ;;
+esac

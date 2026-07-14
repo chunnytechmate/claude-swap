@@ -1,0 +1,13 @@
+# Never commit real profiles — they contain API tokens.
+# Only the sanitized *.json.example templates belong in the repo.
+profiles/*.json
+!profiles/*.json.example
+
+# local switcher state (in case anyone runs the tool from inside the repo)
+profiles/.active
+profiles/.backups/
+.settings.*
+
+# editor / OS cruft
+*.swp
+.DS_Store
