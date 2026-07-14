@@ -6,15 +6,12 @@ subscription and an alternate provider (e.g. **Z.AI / GLM**) instantly.
 
 ```console
 $ claude-swap
-active: claude
-
-profiles:
-  * claude
+Select a profile  (Up/Down or j/k, Enter to switch, q to cancel)
+  > claude  (active)
     zai
 
 $ claude-swap zai
 ✓ switched to zai  → /home/you/.claude/settings.json
-  restart Claude Code / reload the window for env changes to take effect.
 ```
 
 Each profile is a **complete** `settings.json` stored in
@@ -33,6 +30,8 @@ default) you have to rewrite that file — and remember to put the original back
 
 - **Atomic + validated** — the target profile is JSON-checked before it is
   installed; a bad profile never leaves you with a broken `settings.json`.
+  (On Linux/macOS, JSON validation uses `python3` or `jq` if present — see
+  [Requirements](#requirements).)
 - **Automatic backups** — the previous `settings.json` is saved to
   `~/.claude/profiles/.backups/` (last 10 kept).
 - **Drift detection** — `claude-swap status` warns if you hand-edited
@@ -69,7 +68,7 @@ The installer is interactive and smart. It:
 
 ```console
 Enter your Z.AI API key (from https://z.ai — leave blank to skip): ******
-Save key e66336…66Sq to the Z.AI profile? [y/N] y
+Save key abcd12…wxyz to the Z.AI profile? [y/N] y
 
 ✓ Z.AI profile saved successfully.
   File: /home/you/.claude/profiles/zai.json
@@ -86,8 +85,21 @@ cd claude-swap
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+Or one-liner:
+
+```powershell
+irm https://raw.githubusercontent.com/chunnytechmate/claude-swap/main/install.ps1 | iex
+```
+
 Installs to `%LOCALAPPDATA%\claude-swap\bin`, adds it to your user PATH, and
 writes a `claude-swap.cmd` shim so `claude-swap` just works in any new terminal.
+
+## Requirements
+
+- **Linux / macOS** — `bash`. JSON validation uses `python3` or `jq` if either
+  is installed; if neither is present, switches are still atomic but the target
+  profile isn't JSON-pre-checked. `claude-swap update` needs `curl` or `wget`.
+- **Windows** — PowerShell 5.1 or newer (built into Windows 10/11).
 
 ## Using it
 
@@ -113,8 +125,14 @@ claude-swap claude    # back to native Claude
 Skipped the key at install time (or want to change it later)?
 
 ```bash
-claude-swap edit zai  # opens ~/.claude/profiles/zai.json in $EDITOR
+claude-swap edit zai  # opens the profile in $EDITOR
 ```
+
+The profile lives at `~/.claude/profiles/zai.json` (Linux/macOS) or
+`%USERPROFILE%\.claude\profiles\zai.json` (Windows).
+
+> After switching, **restart Claude Code** (or reload the IDE window) so the new
+> `env` / model settings are picked up.
 
 ## Updating
 
@@ -124,11 +142,12 @@ Update the tool in place from GitHub (works on Linux, macOS, and Windows):
 claude-swap update
 ```
 
-It replaces only the `claude-swap` program — your profiles and API keys are
-never touched.
+It always pulls the latest from the `main` branch and replaces only the
+`claude-swap` program — your profiles and API keys are never touched. Already on
+the newest version? It reports that and changes nothing.
 
-> After switching, **restart Claude Code** (or reload the IDE window) so the new
-> `env` / model settings are picked up.
+To pull from a fork or a specific branch instead, set `CLAUDE_SWAP_REPO_RAW`
+(the [Security](#security) section explains the protections that still apply).
 
 ## Commands
 
@@ -151,7 +170,7 @@ The command is already short, but you can go shorter with a shell alias:
 ```bash
 # ~/.bashrc / ~/.zshrc
 alias cz='claude-swap zai'
-alias cc='claude-swap claude'
+alias cc='claude-swap claude'   # note: shadows the `cc` C compiler on some systems
 alias cs='claude-swap status'
 ```
 
@@ -179,8 +198,9 @@ function cs { claude-swap status }
 
 `claude-swap` is designed to be a minimal, auditable attack surface:
 
-- **Zero dependencies** — one bash script / one PowerShell script. No npm, no
-  pip, nothing to supply-chain.
+- **Zero package dependencies** — one bash script / one PowerShell script. No
+  npm, no pip, nothing to supply-chain. Optional `python3`/`jq` only enable
+  stricter JSON validation (see [Requirements](#requirements)).
 - **Secrets never leave your machine.** API tokens live in
   `~/.claude/profiles/*.json` with `600` permissions (dir `700`); the repo
   ships only sanitized `*.json.example` templates and gitignores the rest.
@@ -194,8 +214,8 @@ function cs { claude-swap status }
   (staged next to the target, then renamed) — a failed update can never brick
   the installed tool, and your profiles are never touched.
 - **Path-traversal guard.** Profile names are validated
-  (`[A-Za-z0-9][A-Za-z0-9._-]*`), so a name like `../../evil` can't read or
-  write outside the profiles directory.
+  (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`), so a name like `../../evil` can't read
+  or write outside the profiles directory.
 - **Safe switching.** Every switch validates JSON, backs up the previous
   `settings.json` (mode `600` — backups can contain tokens), and installs the
   new file atomically. A corrupt profile aborts with the live config untouched.
@@ -212,7 +232,36 @@ privately for anything sensitive).
   block and your `zai` profile doesn't, switching to `zai` drops those
   permissions. Keep any settings you want in *both* modes in *both* profiles
   (or add them once and re-`save`).
-- Override the config root for testing with `CLAUDE_SWAP_HOME=/path/to/.claude`.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CLAUDE_SWAP_HOME` | `~/.claude` | config root it manages (`settings.json` + `profiles/`) |
+| `CLAUDE_SWAP_BIN` | `~/.local/bin` (Linux/macOS) | install location for the `claude-swap` command |
+| `CLAUDE_SWAP_REPO_RAW` | `…/claude-swap/main` | source that `update` and the installers pull from |
+
+## Uninstall
+
+Remove the command, profiles, and backups:
+
+```bash
+# Linux / macOS
+rm -f ~/.local/bin/claude-swap
+rm -rf ~/.claude/profiles ~/.claude/.settings.*   # also removes your saved keys
+# (and remove the aliases from ~/.bashrc / ~/.zshrc if you added them)
+```
+
+```powershell
+# Windows
+Remove-Item "$env:LOCALAPPDATA\claude-swap" -Recurse -Force
+Remove-Item "$env:USERPROFILE\.claude\profiles" -Recurse -Force
+```
+
+The live `~/.claude/settings.json` (or `%USERPROFILE%\.claude\settings.json`)
+is left in place, so Claude Code keeps working with whatever profile is active.
+
+Current version: **1.4.0**.
 
 ## License
 
