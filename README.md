@@ -47,15 +47,15 @@ default) you have to rewrite that file — and remember to put the original back
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/<you>/claude-swap.git
+git clone https://github.com/chunnytechmate/claude-swap.git
 cd claude-swap
 ./install.sh
 ```
 
-Or one-liner (once it's on GitHub):
+Or one-liner:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<you>/claude-swap/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/chunnytechmate/claude-swap/main/install.sh | bash
 ```
 
 The installer is interactive and smart. It:
@@ -81,7 +81,7 @@ Prefer non-interactive? Set the key up front: `ZAI_API_KEY=... ./install.sh`.
 ### Windows (PowerShell)
 
 ```powershell
-git clone https://github.com/<you>/claude-swap.git
+git clone https://github.com/chunnytechmate/claude-swap.git
 cd claude-swap
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
