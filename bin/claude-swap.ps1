@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.1.0'
+$Version = '1.1.1'
 $RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
@@ -161,16 +161,38 @@ function Invoke-Pick {
   $active = Get-Marker
   $cur = [Array]::IndexOf($opts, $active); if ($cur -lt 0) { $cur = 0 }
 
-  Write-Host 'Select a profile  ' -NoNewline
-  Write-Host '(Up/Down to move, Enter to switch, Q to cancel)' -ForegroundColor DarkGray
-  $top = [Console]::CursorTop
+  # Redraw strategy: try to anchor the cursor and rewrite in place (clean).
+  # If the host/terminal (e.g. some ConPTY setups) rejects cursor moves, fall
+  # back to Clear-Host so the menu never stacks up.
+  $canPos = $false
+  $anchor = $null
+  try { $anchor = $Host.UI.RawUI.CursorPosition; $canPos = $true } catch { $canPos = $false }
+
+  $width = 46
+  try { $w = [Console]::WindowWidth - 1; if ($w -ge 20) { $width = $w } } catch { }
+
+  $first = $true
   while ($true) {
+    if (-not $first) {
+      if ($canPos) {
+        try {
+          $Host.UI.RawUI.CursorPosition = $anchor
+          # verify the move actually took effect (some hosts silently ignore it)
+          if ($Host.UI.RawUI.CursorPosition.Y -ne $anchor.Y) { $canPos = $false }
+        } catch { $canPos = $false }
+      }
+      if (-not $canPos) { Clear-Host }
+    }
+    $first = $false
+
+    Write-Host ('Select a profile  (Up/Down to move, Enter to switch, Q to cancel)'.PadRight($width)) -ForegroundColor DarkGray
     for ($i = 0; $i -lt $opts.Count; $i++) {
-      $tag = if ($opts[$i] -eq $active) { '  (active)' } else { '' }
+      $tag  = if ($opts[$i] -eq $active) { '  (active)' } else { '' }
       $line = if ($i -eq $cur) { "  > $($opts[$i])$tag" } else { "    $($opts[$i])$tag" }
-      $line = $line.PadRight([Math]::Max(1, [Console]::WindowWidth - 1))
+      $line = $line.PadRight($width)
       if ($i -eq $cur) { Write-Host $line -ForegroundColor Cyan } else { Write-Host $line }
     }
+
     $k = [Console]::ReadKey($true)
     switch ($k.Key) {
       'UpArrow'   { $cur = ($cur - 1 + $opts.Count) % $opts.Count }
@@ -181,7 +203,6 @@ function Invoke-Pick {
       'Q'         { return $null }
       'Escape'    { return $null }
     }
-    try { [Console]::SetCursorPosition(0, $top) } catch { }
   }
 }
 

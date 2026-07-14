@@ -16,7 +16,7 @@
 #
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 REPO_RAW="${CLAUDE_SWAP_REPO_RAW:-https://raw.githubusercontent.com/chunnytechmate/claude-swap/main}"
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) --------------
