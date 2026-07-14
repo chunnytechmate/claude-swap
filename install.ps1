@@ -45,7 +45,7 @@ $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$BinDir*") {
   $newPath = if ([string]::IsNullOrEmpty($userPath)) { $BinDir } else { "$userPath;$BinDir" }
   [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-  Warn "added $BinDir to your USER PATH — open a NEW terminal for it to take effect."
+  Warn "added $BinDir to your USER PATH - open a NEW terminal for it to take effect."
 }
 
 # --- 3. profiles dir + import current settings as `claude` ---------------

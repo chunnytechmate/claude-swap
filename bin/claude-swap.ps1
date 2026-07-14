@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  claude-swap — switch %USERPROFILE%\.claude\settings.json between named profiles.
+  claude-swap - switch %USERPROFILE%\.claude\settings.json between named profiles.
 
 .EXAMPLE
   claude-swap                 # show status
@@ -91,7 +91,7 @@ function Cmd-Status {
   $matched = Get-Matched
   if     ($marker)  { Write-Host "active: " -NoNewline; Write-Host $marker -ForegroundColor Cyan }
   elseif ($matched) { Write-Host "active: " -NoNewline; Write-Host "$matched (detected)" -ForegroundColor Cyan }
-  else              { Write-Host "active: (unknown — settings.json matches no profile)" -ForegroundColor Yellow }
+  else              { Write-Host "active: (unknown - settings.json matches no profile)" -ForegroundColor Yellow }
 
   if ($marker -and (Test-Path (ProfilePath $marker))) {
     if ((Get-Hash $Settings) -ne (Get-Hash (ProfilePath $marker))) {
@@ -107,7 +107,7 @@ function Cmd-Status {
 function Cmd-Switch {
   param([string]$n)
   $target = ProfilePath $n
-  if (-not (Test-Path $target)) { Die "profile '$n' not found — run: claude-swap list" }
+  if (-not (Test-Path $target)) { Die "profile '$n' not found - run: claude-swap list" }
   if (-not (Test-Json $target)) { Die "profile '$n' is not valid JSON: $target" }
 
   New-Item -ItemType Directory -Force -Path $ProfilesDir, $BackupDir | Out-Null
@@ -126,7 +126,7 @@ function Cmd-Switch {
   # atomic-ish: write temp in same dir, validate, then move
   $tmp = Join-Path $ClaudeDir (".settings." + [guid]::NewGuid().ToString('N'))
   Copy-Item -LiteralPath $target -Destination $tmp -Force
-  if (-not (Test-Json $tmp)) { Remove-Item -Force $tmp; Die "staged settings invalid — aborted" }
+  if (-not (Test-Json $tmp)) { Remove-Item -Force $tmp; Die "staged settings invalid - aborted" }
   Move-Item -LiteralPath $tmp -Destination $Settings -Force
   Set-Content -LiteralPath $ActiveMark -Value $n -NoNewline
   Write-Host "switched to $n" -ForegroundColor Green -NoNewline; Write-Host "  -> $Settings" -ForegroundColor DarkGray
@@ -156,7 +156,7 @@ function Cmd-Edit {
 
 function Show-Usage {
   @"
-claude-swap $Version — switch %USERPROFILE%\.claude\settings.json between named profiles
+claude-swap $Version - switch %USERPROFILE%\.claude\settings.json between named profiles
 
 usage:
   claude-swap                 show status
