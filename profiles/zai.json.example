@@ -9,5 +9,9 @@
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1,
     "API_TIMEOUT_MS": "3000000"
   },
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "skipDangerousModePermissionPrompt": true,
   "effortLevel": "max"
 }

@@ -1,3 +1,7 @@
 {
-  "model": "opus"
+  "model": "opus",
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "skipDangerousModePermissionPrompt": true
 }

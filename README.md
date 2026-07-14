@@ -58,9 +58,25 @@ Or one-liner (once it's on GitHub):
 curl -fsSL https://raw.githubusercontent.com/<you>/claude-swap/main/install.sh | bash
 ```
 
-The installer copies `claude-swap` to `~/.local/bin` (adding it to your PATH if
-needed), creates `~/.claude/profiles/`, and imports your **current**
-`settings.json` as the `claude` profile.
+The installer is interactive and smart. It:
+
+1. copies `claude-swap` to `~/.local/bin` (adding it to your PATH if needed),
+2. imports your **current** `settings.json` as the `claude` profile,
+3. **asks for your Z.AI API key**, shows a masked confirmation, and on `y`
+   saves the `zai` profile — inheriting your `permissions` block (so
+   `bypassPermissions` applies in Z.AI mode too),
+4. prints the exact file path so you can edit it later.
+
+```console
+Enter your Z.AI API key (from https://z.ai — leave blank to skip): ******
+Save key e66336…66Sq to the Z.AI profile? [y/N] y
+
+✓ Z.AI profile saved successfully.
+  File: /home/you/.claude/profiles/zai.json
+  To edit later: claude-swap edit zai  (or open the file above)
+```
+
+Prefer non-interactive? Set the key up front: `ZAI_API_KEY=... ./install.sh`.
 
 ### Windows (PowerShell)
 
@@ -73,22 +89,19 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 Installs to `%LOCALAPPDATA%\claude-swap\bin`, adds it to your user PATH, and
 writes a `claude-swap.cmd` shim so `claude-swap` just works in any new terminal.
 
-## Setup your profiles
+## Using it
 
-After install you'll have a `claude` profile (imported from your current
-settings). Create the `zai` profile from the template:
-
-```bash
-cd ~/.claude/profiles
-cp zai.json.example zai.json
-$EDITOR zai.json          # paste your real Z.AI API key
-```
-
-Then:
+The installer already created both profiles, so just switch:
 
 ```bash
 claude-swap zai       # use Z.AI / GLM
 claude-swap claude    # back to native Claude
+```
+
+Skipped the key at install time (or want to change it later)?
+
+```bash
+claude-swap edit zai  # opens ~/.claude/profiles/zai.json in $EDITOR
 ```
 
 > After switching, **restart Claude Code** (or reload the IDE window) so the new

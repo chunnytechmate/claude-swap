@@ -3,16 +3,18 @@
   claude-swap installer (Windows)
 
   Smart install:
-    * copies claude-swap.ps1 to %LOCALAPPDATA%\claude-swap\bin
-    * writes a claude-swap.cmd shim so you can just type `claude-swap`
+    * copies claude-swap.ps1 to %LOCALAPPDATA%\claude-swap\bin + a .cmd shim
     * adds that bin dir to your USER PATH (if missing)
     * creates %USERPROFILE%\.claude\profiles\
-    * imports current settings.json as the `claude` profile (if no profiles yet)
-    * drops profile templates
+    * imports current settings.json as the `claude` profile
+    * interactively sets up the `zai` profile: asks for your Z.AI API key,
+      confirms, saves it (inheriting your permissions so bypassPermissions
+      carries over), and prints the exact path for future edits
+
+  Non-interactive: set $env:ZAI_API_KEY to skip the prompt.
 
   Usage:
     powershell -ExecutionPolicy Bypass -File .\install.ps1
-    irm <raw-url>/install.ps1 | iex        # (from the repo root)
 #>
 [CmdletBinding()]
 param()
@@ -31,7 +33,6 @@ function Warn { param($m) Write-Host "!   $m" -ForegroundColor Yellow }
 # --- 1. install script + cmd shim ----------------------------------------
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoDir 'bin\claude-swap.ps1') -Destination (Join-Path $BinDir 'claude-swap.ps1') -Force
-
 $shim = @"
 @echo off
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0claude-swap.ps1" %*
@@ -47,28 +48,68 @@ if ($userPath -notlike "*$BinDir*") {
   Warn "added $BinDir to your USER PATH — open a NEW terminal for it to take effect."
 }
 
-# --- 3. profiles dir + smart import --------------------------------------
+# --- 3. profiles dir + import current settings as `claude` ---------------
 New-Item -ItemType Directory -Force -Path $ProfilesDir | Out-Null
-$haveProfiles = (Get-ChildItem -LiteralPath $ProfilesDir -Filter '*.json' -File -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
+$claudeProfile = Join-Path $ProfilesDir 'claude.json'
 $settings = Join-Path $ClaudeDir 'settings.json'
-if (-not $haveProfiles -and (Test-Path $settings)) {
-  Copy-Item -LiteralPath $settings -Destination (Join-Path $ProfilesDir 'claude.json') -Force
+if (-not (Test-Path $claudeProfile) -and (Test-Path $settings)) {
+  Copy-Item -LiteralPath $settings -Destination $claudeProfile -Force
   Set-Content -LiteralPath (Join-Path $ProfilesDir '.active') -Value 'claude' -NoNewline
   Ok "imported current settings.json as the 'claude' profile"
 }
 
-Get-ChildItem -LiteralPath (Join-Path $RepoDir 'profiles') -Filter '*.json.example' -File -ErrorAction SilentlyContinue | ForEach-Object {
-  $base = $_.Name -replace '\.example$',''      # zai.json
-  $dest = Join-Path $ProfilesDir $base
-  if (-not (Test-Path $dest)) {
-    Copy-Item -LiteralPath $_.FullName -Destination "$dest.example" -Force
-    Write-Host "  template available: $dest.example (fill in and rename to $base)" -ForegroundColor DarkGray
+# --- 4. smart Z.AI profile setup -----------------------------------------
+function Build-ZaiJson {
+  param([string]$Key, [string]$Dest)
+  $prof = Get-Content -Raw -LiteralPath (Join-Path $RepoDir 'profiles\zai.json.example') | ConvertFrom-Json
+  $prof.env.ANTHROPIC_AUTH_TOKEN = $Key
+  if (Test-Path $claudeProfile) {
+    try {
+      $base = Get-Content -Raw -LiteralPath $claudeProfile | ConvertFrom-Json
+      if ($base.permissions) { $prof.permissions = $base.permissions }
+      if ($null -ne $base.skipDangerousModePermissionPrompt) {
+        $prof.skipDangerousModePermissionPrompt = $base.skipDangerousModePermissionPrompt
+      }
+    } catch { }
+  }
+  ($prof | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $Dest -Encoding UTF8
+}
+
+$zaiDest = Join-Path $ProfilesDir 'zai.json'
+if (Test-Path $zaiDest) {
+  Write-Host "  zai profile already exists - left untouched." -ForegroundColor DarkGray
+} else {
+  $key = $env:ZAI_API_KEY
+  if (-not $key) {
+    Write-Host ''
+    Write-Host 'Set up the Z.AI profile now.' -ForegroundColor White
+    $secure = Read-Host -Prompt 'Enter your Z.AI API key (from https://z.ai - leave blank to skip)' -AsSecureString
+    $key = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+             [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+  }
+  if (-not $key) {
+    Copy-Item -LiteralPath (Join-Path $RepoDir 'profiles\zai.json.example') -Destination "$zaiDest.example" -Force
+    Warn "no key entered - template saved to $zaiDest.example"
+    Write-Host "  add your key later, then rename it to zai.json (or run: claude-swap edit zai)" -ForegroundColor DarkGray
+  } else {
+    $masked = if ($key.Length -gt 12) { $key.Substring(0,6) + '...' + $key.Substring($key.Length-4) } else { '********' }
+    $ans = Read-Host -Prompt "Save key $masked to the Z.AI profile? [y/N]"
+    if ($ans -match '^(y|yes)$') {
+      Build-ZaiJson -Key $key -Dest $zaiDest
+      Write-Host ''
+      Ok 'Z.AI profile saved successfully.'
+      Write-Host "  File: $zaiDest"
+      Write-Host "  To edit later: claude-swap edit zai  (or open the file above)" -ForegroundColor DarkGray
+    } else {
+      Warn 'cancelled - no key saved.'
+    }
   }
 }
 
+# --- 5. done -------------------------------------------------------------
 Write-Host ''
-Ok 'done.'
+Ok 'Installation complete.'
 Write-Host 'Try:  claude-swap            # status'
-Write-Host '      claude-swap zai        # switch to Z.AI'
+Write-Host '      claude-swap zai        # switch to Z.AI / GLM'
 Write-Host '      claude-swap claude     # switch back to native Claude'
 Warn 'open a NEW terminal before the command is found (PATH was updated).'
