@@ -8,6 +8,7 @@
 #   claude-swap status       show active profile and drift check
 #   claude-swap which        print the active profile name only (scriptable)
 #   claude-swap edit <name>  open a profile in $EDITOR
+#   claude-swap changekey [name]  replace the API key in a profile (default zai)
 #   claude-swap update       update claude-swap itself from GitHub
 #   claude-swap help
 #
@@ -16,7 +17,7 @@
 #
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 REPO_RAW="${CLAUDE_SWAP_REPO_RAW:-https://raw.githubusercontent.com/chunnytechmate/claude-swap/main}"
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) --------------
@@ -207,6 +208,94 @@ cmd_edit() {
   json_valid "$target" || err "warning: '$name' is no longer valid JSON"
 }
 
+# Replace only env.<field> in a profile JSON, preserving everything else.
+# The key is never passed via argv (env var for python3; a temp file for jq).
+# Returns 0 on success, nonzero otherwise.
+update_token() {  # dest key field
+  local dest="$1" key="$2" field="$3" kf
+  if command -v python3 >/dev/null 2>&1; then
+    KEY="$key" DEST="$dest" FIELD="$field" python3 - <<'PY' || { rm -f "$dest.tmp"; return 1; }
+import json, os
+p = os.environ['DEST']
+d = json.load(open(p))
+d.setdefault('env', {})[os.environ['FIELD']] = os.environ['KEY']
+with open(p + '.tmp', 'w') as f:
+    json.dump(d, f, indent=2); f.write('\n')
+PY
+    mv -f "$dest.tmp" "$dest" || return 1
+    return 0
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    kf=$(mktemp) || return 1
+    printf '%s' "$key" > "$kf"; chmod 600 "$kf"
+    jq --rawfile k "$kf" --arg f "$field" '.env[$f] = ($k|rtrimstr("\n"))' "$dest" > "$dest.tmp" \
+      || { rm -f "$kf" "$dest.tmp"; return 1; }
+    rm -f "$kf"
+    mv -f "$dest.tmp" "$dest" || return 1
+    return 0
+  fi
+  return 2  # no JSON tooling available
+}
+
+cmd_changekey() {
+  local name="${1:-zai}" target field
+  valid_name "$name" || die "invalid profile name: '$name' (letters, digits, . _ - only)"
+  target=$(profile_path "$name")
+  [ -f "$target" ] || die "profile '$name' not found — run: claude-swap list"
+
+  # which key field does this profile use?
+  if   grep -q '"ANTHROPIC_AUTH_TOKEN"' "$target"; then field=ANTHROPIC_AUTH_TOKEN
+  elif grep -q '"ANTHROPIC_API_KEY"'    "$target"; then field=ANTHROPIC_API_KEY
+  else die "profile '$name' has no ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY field — try: claude-swap edit $name"; fi
+
+  # hidden input from the terminal (fall back to stdin for pipes/tests)
+  local in=0; if { exec 3</dev/tty; } 2>/dev/null; then in=3; fi
+  local key ans masked
+  printf '%sChange API key for %s%s  %s(%s)%s\n' "$BOLD" "$name" "$RST" "$DIM" "$field" "$RST"
+  printf 'Enter new API key %s(blank to cancel)%s: ' "$DIM" "$RST"
+  if [ "$in" = 3 ]; then IFS= read -r -s key <&3 || key=""; else IFS= read -r -s key || key=""; fi
+  printf '\n'
+  [ -n "$key" ] || { [ "$in" = 3 ] && exec 3<&-; info "${DIM}cancelled — no changes${RST}"; return 0; }
+
+  if [ "${#key}" -gt 12 ]; then masked="${key:0:6}…${key: -4}"; else masked="********"; fi
+  printf 'Save key %s%s%s to %s? [y/N] ' "$BOLD" "$masked" "$RST" "$name"
+  if [ "$in" = 3 ]; then IFS= read -r ans <&3 || ans=""; else IFS= read -r ans || ans=""; fi
+  case "$ans" in
+    y|Y|yes|YES|Yes) ;;
+    *) [ "$in" = 3 ] && exec 3<&-; info "${DIM}cancelled — no changes${RST}"; return 0 ;;
+  esac
+  [ "$in" = 3 ] && exec 3<&-
+
+  if ! update_token "$target" "$key" "$field"; then
+    die "failed to update '$name' (install python3 or jq, or use: claude-swap edit $name)"
+  fi
+  chmod 600 "$target" 2>/dev/null || true
+  info "${GRN}✓${RST} updated ${BOLD}$field${RST} in profile ${BOLD}$name${RST}  ${DIM}($target)${RST}"
+
+  # if this is the active profile, re-deploy so the new key takes effect now
+  if [ "$(marker_profile)" = "$name" ]; then
+    mkdir -p "$BACKUP_DIR"; chmod 700 "$BACKUP_DIR" 2>/dev/null || true
+    if [ -f "$SETTINGS" ]; then
+      ts=$(date +%Y%m%d-%H%M%S)
+      cp -p "$SETTINGS" "$BACKUP_DIR/settings.$ts.json"
+      chmod 600 "$BACKUP_DIR/settings.$ts.json" 2>/dev/null || true
+      prune_backups
+    fi
+    local tmp; tmp=$(mktemp "$CLAUDE_DIR/.settings.XXXXXX")
+    cat "$target" > "$tmp"
+    if json_valid "$tmp"; then
+      mv -f "$tmp" "$SETTINGS"
+      info "${DIM}  also applied to live settings.json ($name is active)${RST}"
+    else
+      rm -f "$tmp"
+      info "${YLW}  profile is active but settings.json was NOT updated (invalid JSON)${RST}"
+    fi
+    info "${DIM}  restart Claude Code / reload the window for the change to take effect.${RST}"
+  else
+    info "${DIM}  (not active — run 'claude-swap $name' to apply)${RST}"
+  fi
+}
+
 # Interactive arrow-key picker (ANSI redraw). Renders to stderr; sets REPLY_PROFILE.
 # Returns 1 if cancelled. Reads keys from the terminal (falls back to stdin).
 REPLY_PROFILE=""
@@ -332,6 +421,7 @@ ${BOLD}usage:${RST}
   claude-swap which           print active profile name only
   claude-swap save ${CYN}<name>${RST}     save current settings.json into a profile
   claude-swap edit ${CYN}<name>${RST}     open a profile in \$EDITOR
+  claude-swap changekey ${CYN}[name]${RST}   replace the API key in a profile (default zai)
   claude-swap update          update claude-swap itself from GitHub
   claude-swap help
 
@@ -358,6 +448,7 @@ case "$cmd" in
   which)             marker_profile; echo ;;
   save)              cmd_save "${2:-}" ;;
   edit)              cmd_edit "${2:-}" ;;
+  changekey|change-key|key)  cmd_changekey "${2:-}" ;;
   pick|menu)         if interactive_pick; then cmd_switch "$REPLY_PROFILE"; else info "${DIM}cancelled${RST}"; fi ;;
   update|upgrade)    cmd_update ;;
   help|-h|--help)    usage ;;

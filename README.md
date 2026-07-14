@@ -128,6 +128,15 @@ Skipped the key at install time (or want to change it later)?
 claude-swap edit zai  # opens the profile in $EDITOR
 ```
 
+Need to rotate the key? Do it without leaving the terminal — `changekey`
+prompts for a new key (hidden input, masked confirmation), replaces only the
+token, and re-applies live if that profile is active:
+
+```bash
+claude-swap changekey        # change the zai key (default profile)
+claude-swap changekey zai    # explicit
+```
+
 The profile lives at `~/.claude/profiles/zai.json` (Linux/macOS) or
 `%USERPROFILE%\.claude\profiles\zai.json` (Windows).
 
@@ -160,6 +169,7 @@ To pull from a fork or a specific branch instead, set `CLAUDE_SWAP_REPO_RAW`
 | `claude-swap which` | print active profile name only (scriptable) |
 | `claude-swap save <name>` | save current `settings.json` into a profile |
 | `claude-swap edit <name>` | open a profile in `$EDITOR` |
+| `claude-swap changekey [name]` | replace the API key in a profile (default `zai`) |
 | `claude-swap update` | update claude-swap itself from GitHub |
 | `claude-swap help` | usage |
 
@@ -261,7 +271,7 @@ Remove-Item "$env:USERPROFILE\.claude\profiles" -Recurse -Force
 The live `~/.claude/settings.json` (or `%USERPROFILE%\.claude\settings.json`)
 is left in place, so Claude Code keeps working with whatever profile is active.
 
-Current version: **1.4.0**.
+Current version: **1.5.0**.
 
 ## License
 

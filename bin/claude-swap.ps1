@@ -12,6 +12,7 @@
   claude-swap which
   claude-swap save <name>
   claude-swap edit <name>
+  claude-swap changekey [name]   # replace the API key in a profile (default zai)
   claude-swap update          # update claude-swap itself from GitHub
   claude-swap help
 #>
@@ -22,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version = '1.4.0'
+$Version = '1.5.0'
 $RepoRaw = if ($env:CLAUDE_SWAP_REPO_RAW) { $env:CLAUDE_SWAP_REPO_RAW } else { 'https://raw.githubusercontent.com/chunnytechmate/claude-swap/main' }
 
 # --- paths (override root with CLAUDE_SWAP_HOME for testing) ---------------
@@ -160,6 +161,64 @@ function Cmd-Edit {
   if (-not (Test-Json $target)) { Write-Host "warning: '$n' is no longer valid JSON" -ForegroundColor Yellow }
 }
 
+function Cmd-ChangeKey {
+  param([string]$n)
+  if (-not $n) { $n = 'zai' }
+  if (-not (Test-Name $n)) { Die "invalid profile name: '$n' (letters, digits, . _ - only)" }
+  $target = ProfilePath $n
+  if (-not (Test-Path $target)) { Die "profile '$n' not found - run: claude-swap list" }
+
+  # which key field does this profile use?
+  $raw = Get-Content -Raw -LiteralPath $target
+  $field = $null
+  if     ($raw -match '"ANTHROPIC_AUTH_TOKEN"') { $field = 'ANTHROPIC_AUTH_TOKEN' }
+  elseif ($raw -match '"ANTHROPIC_API_KEY"')    { $field = 'ANTHROPIC_API_KEY' }
+  if (-not $field) { Die "profile '$n' has no ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY field - try: claude-swap edit $n" }
+
+  Write-Host "Change API key for $n ($field)"
+  $secure = Read-Host -Prompt 'Enter new API key (blank to cancel)' -AsSecureString
+  $key = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+           [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+  if (-not $key) { Write-Host 'cancelled - no changes' -ForegroundColor DarkGray; return }
+
+  $masked = if ($key.Length -gt 12) { $key.Substring(0,6) + '...' + $key.Substring($key.Length-4) } else { '********' }
+  $ans = Read-Host -Prompt "Save key $masked to $n? [y/N]"
+  if ($ans -notmatch '^(y|yes)$') { Write-Host 'cancelled - no changes' -ForegroundColor DarkGray; return }
+
+  # replace only env.<field>, preserving everything else
+  try {
+    $prof = Get-Content -Raw -LiteralPath $target | ConvertFrom-Json
+    if (-not $prof.env) { Die "profile '$n' has no env block - try: claude-swap edit $n" }
+    $prof.env.$field = $key
+    ($prof | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $target -Encoding UTF8
+  } catch { Die "failed to update '$n': $($_.Exception.Message)" }
+
+  Write-Host "updated $field in profile $n" -ForegroundColor Green -NoNewline
+  Write-Host "  ($target)" -ForegroundColor DarkGray
+
+  # if this is the active profile, re-deploy so the new key takes effect now
+  if ((Get-Marker) -eq $n) {
+    New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+    if (Test-Path $Settings) {
+      $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+      Copy-Item -LiteralPath $Settings -Destination (Join-Path $BackupDir "settings.$ts.json") -Force
+      Invoke-Prune
+    }
+    $tmp = Join-Path $ClaudeDir (".settings." + [guid]::NewGuid().ToString('N'))
+    Copy-Item -LiteralPath $target -Destination $tmp -Force
+    if (Test-Json $tmp) {
+      Move-Item -LiteralPath $tmp -Destination $Settings -Force
+      Write-Host "  also applied to live settings.json ($n is active)" -ForegroundColor DarkGray
+    } else {
+      Remove-Item -Force $tmp
+      Write-Host "  profile is active but settings.json was NOT updated (invalid JSON)" -ForegroundColor Yellow
+    }
+    Write-Host "  restart Claude Code / reload the window for the change to take effect." -ForegroundColor DarkGray
+  } else {
+    Write-Host "  (not active - run 'claude-swap $n' to apply)" -ForegroundColor DarkGray
+  }
+}
+
 # Best-effort: enable ANSI/VT output for legacy conhost (Win10 < 1903).
 # ConPTY / Windows Terminal / VS Code already have VirtualTerminalLevel = 1.
 function Enable-Vt {
@@ -286,6 +345,7 @@ usage:
   claude-swap which           print active profile name only
   claude-swap save <name>     save current settings.json into a profile
   claude-swap edit <name>     open a profile in `$EDITOR
+  claude-swap changekey [name]   replace the API key in a profile (default zai)
   claude-swap update          update claude-swap itself from GitHub
   claude-swap help
 
@@ -311,6 +371,9 @@ switch ($Command.ToLower()) {
   'which'   { Get-Marker }
   'save'    { Cmd-Save $Name }
   'edit'    { Cmd-Edit $Name }
+  'changekey'  { Cmd-ChangeKey $Name }
+  'change-key' { Cmd-ChangeKey $Name }
+  'key'        { Cmd-ChangeKey $Name }
   'pick'    { Invoke-PickAndSwitch }
   'menu'    { Invoke-PickAndSwitch }
   'update'  { Cmd-Update }
